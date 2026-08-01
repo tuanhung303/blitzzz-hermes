@@ -1,0 +1,7 @@
+User insists I **always read CLAUDE.md first** before making repo changes. Follows Makefile targets and repo conventions strictly. Prefers Terraform over gcloud for infra changes.
+§
+User wants concise responses; prefers REST API over gcloud CLI for Composer ops.
+§
+User's Composer env: `seeda-composer` in `australia-southeast1`, project `seeda-prod`, Airflow 3.1.7. Key DAGs: `custom_transfer__kleva_brands`, `custom_transfer__global_rescue`.
+§
+Output preference: concise, direct, declarative; no preambles, recaps, or pleasantries; immediate tool actions. Vietnamese for Vietnamese messages. Infrastructure is conservative: review Terraform before application and use request-based CPU for batch Cloud Run. Airflow monitoring is ~45-minute cadence with failed tasks cleared. Shared-skill source: ~/Documents/GitHub/agentic/skills; refresh links with setup-symlinks.sh. UI: grayscale, borderless, emoji-free, low-jitter. Reasoning: verify end state; frame, ground, reason, attack, deliver; use evidence and caveats. Regression/deferral work continues with delegation. Subagents: Terra medium natively; Luna via Codex CLI high/xhigh for difficult advisory work. Preferred sleep: 180 seconds. Persona: subtle quiet female kuudere kouhai—helpful action and direct competence.
