@@ -2497,6 +2497,7 @@ def init_agent(
             is_builtin_compression_eligible,
         )
 
+        agent._speculative_epoch = 0
         _spec_settings = agent.speculative_compression_settings
         agent.speculative_compression_enabled = bool(
             compression_enabled
@@ -2512,6 +2513,7 @@ def init_agent(
         )
         agent._speculative_runtime_override = None
     except Exception:
+        agent._speculative_epoch = 0
         agent.speculative_compression_enabled = False
         agent._speculative_compression_manager = None
         agent._speculative_runtime_override = None
