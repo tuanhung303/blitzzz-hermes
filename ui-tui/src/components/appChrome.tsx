@@ -565,6 +565,10 @@ export function StatusRule({
           : speculativeCompressionState === 'active'
             ? t.color.error
             : null
+    const compressionCount =
+      cols >= 80 && typeof usage.compressions === 'number' && usage.compressions > 0
+        ? usage.compressions
+        : 0
 
     return (
       <Box height={1}>
@@ -584,6 +588,7 @@ export function StatusRule({
             {usage.context_max
               ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
               : `${fmtK(usage.total)}/—`}
+            {compressionCount ? ` · cmp ${compressionCount}` : ''}
           </Text>
         </Box>
       </Box>
