@@ -4910,6 +4910,19 @@ def set_config_value(key: str, value: str, force: bool = False):
             coerced_value = int(value)
         elif value.replace('.', '', 1).isdigit():
             coerced_value = float(value)
+        elif value[:1] in ("{", "["):
+            # Structured values (JSON dict/list) round-trip as real YAML
+            # mappings instead of opaque strings — otherwise
+            # ``hermes config set agent.reasoning_overrides '{...}'``
+            # stringified the override map and the runtime resolver
+            # silently fell back to the global effort.
+            try:
+                _parsed = json.loads(value)
+                if isinstance(_parsed, (dict, list)):
+                    coerced_value = _parsed
+            except (ValueError, TypeError):
+                pass
+
 
     value = coerced_value
     # Normalize a scalar ``model`` key before writing sub-keys so that
