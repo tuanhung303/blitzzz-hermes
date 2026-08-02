@@ -34,6 +34,7 @@ import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.j
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { emitSessionIdAtExit } from '../lib/sessionExit.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
@@ -536,6 +537,11 @@ export function useMainApp(gw: GatewayClient) {
   const die = useCallback(() => {
     gw.kill('app.die')
     exit()
+    // Emit the session id on user-initiated exits (Ctrl+C / Ctrl+D when idle,
+    // /quit) so the conversation can be resumed afterwards. Must run AFTER
+    // Ink's unmount so the line lands on the restored normal screen.
+    emitSessionIdAtExit(getUiState().sid)
+
     // Ink's exit() calls unmount() which resets terminal modes but does NOT
     // call process.exit().  Without an explicit exit the Node process stays
     // alive (stdin listener keeps the event loop open), so the process.on('exit')
