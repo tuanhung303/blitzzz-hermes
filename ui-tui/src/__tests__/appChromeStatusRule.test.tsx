@@ -67,6 +67,7 @@ const baseProps: Parameters<typeof StatusRule>[0] = {
   modelReasoningEffort: 'high',
   notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: '⚠ 90% used' },
   sessionStartedAt: Date.now() - 60_000,
+  speculativeCompressionState: 'idle',
   status: 'ready',
   statusColor: DEFAULT_THEME.color.ok,
   t: DEFAULT_THEME,
@@ -121,6 +122,16 @@ describe('StatusRule', () => {
 
     expect(idle?.props.busy).toBe(false)
     expect(busy?.props.busy).toBe(true)
+  })
+
+  it('uses warm water tones only while speculative compaction is pending or active', () => {
+    const queued = findWaterTicker(StatusRule({ ...baseProps, speculativeCompressionState: 'queued' }))
+    const active = findWaterTicker(StatusRule({ ...baseProps, speculativeCompressionState: 'active' }))
+    const installed = findWaterTicker(StatusRule({ ...baseProps, speculativeCompressionState: 'installed' }))
+
+    expect(queued?.props.color).toBe(DEFAULT_THEME.color.warn)
+    expect(active?.props.color).toBe(DEFAULT_THEME.color.error)
+    expect(installed?.props.color).toBe(DEFAULT_THEME.color.muted)
   })
 
   it('uses a stable effort label when the session has no explicit effort', () => {

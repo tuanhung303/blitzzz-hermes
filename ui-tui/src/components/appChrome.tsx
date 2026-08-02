@@ -4,7 +4,7 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
+import type { BatteryInfo, IndicatorStyle, Notice, SpeculativeCompressionState } from '../app/interfaces.js'
 import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
@@ -447,6 +447,7 @@ export const WATER_CELL_COUNT = 25
 // terminal-wide 60 FPS repaint loop. The phase step keeps the original wave
 // velocity, but exposes twice as many intermediate surface positions.
 const WATER_FRAME_MS = 60
+
 const BRAILLE_DOTS = [
   [0x01, 0x08],
   [0x02, 0x10],
@@ -463,6 +464,7 @@ export const waterFrame = (frame: number): string => {
     const x = pixel / (pixelCount - 1)
     const source = 0.52 + 0.18 * Math.sin(phase * 0.31)
     const distance = Math.abs(x - source)
+
     const height =
       2.4 +
       0.9 * Math.sin(x * Math.PI * 2 * 1.25 + phase) +
@@ -550,6 +552,7 @@ export function StatusRule({
   lastTurnEndedAt,
   liveSessionCount,
   sessionStartedAt,
+  speculativeCompressionState,
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
@@ -580,11 +583,28 @@ export function StatusRule({
   const useFixedWaterStatus = true
 
   if (useFixedWaterStatus) {
+    const speculativePending =
+      speculativeCompressionState === 'queued' ||
+      speculativeCompressionState === 'preparing' ||
+      speculativeCompressionState === 'active'
+
+    const speculativeWaterColor =
+      speculativeCompressionState === 'queued'
+        ? t.color.warn
+        : speculativeCompressionState === 'preparing'
+          ? t.color.accent
+          : speculativeCompressionState === 'active'
+            ? t.color.error
+            : null
+
     return (
       <Box height={1}>
         <Box flexDirection="row" flexShrink={1} overflow="hidden" width={Math.max(1, cols)}>
           <Box flexShrink={0} width={WATER_CELL_COUNT}>
-            <WaterTicker busy={busy} color={busy ? statusColor : t.color.muted} />
+            <WaterTicker
+              busy={busy || speculativePending}
+              color={speculativeWaterColor ?? (busy ? statusColor : t.color.muted)}
+            />
           </Box>
           <Text color={t.color.border}>{' │ '}</Text>
           <Text color={t.color.label} wrap="truncate-end">
@@ -592,7 +612,9 @@ export function StatusRule({
           </Text>
           <Text color={t.color.border}>{' │ '}</Text>
           <Text color={t.color.muted} wrap="truncate-end">
-            {usage.context_max ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}` : `${fmtK(usage.total)}/—`}
+            {usage.context_max
+              ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+              : `${fmtK(usage.total)}/—`}
           </Text>
         </Box>
       </Box>
@@ -964,6 +986,7 @@ interface StatusRuleProps {
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number
+  speculativeCompressionState: SpeculativeCompressionState
   status: string
   statusColor: string
   t: Theme
