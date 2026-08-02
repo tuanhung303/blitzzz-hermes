@@ -14991,6 +14991,44 @@ def test_get_usage_clamps_post_compression_sentinel():
     assert "context_percent" not in usage
 
 
+def test_get_usage_emits_window_without_occupancy():
+    """Before the first turn last_prompt_tokens is 0 — the status line must
+    still show the model's window (0/260k), not degrade to the 0/— fallback.
+    The occupancy gauge (used/percent) stays gated on real usage."""
+    agent = types.SimpleNamespace(
+        model="test-model",
+        session_total_tokens=0,
+        context_compressor=types.SimpleNamespace(
+            last_prompt_tokens=0,
+            context_length=1_048_576,
+            compression_count=0,
+        ),
+    )
+    usage = server._get_usage(agent)
+    assert usage["context_max"] == 1_048_576
+    assert "context_used" not in usage
+    assert "context_percent" not in usage
+
+
+def test_get_usage_falls_back_to_catalog_window_when_engine_unknown():
+    """An engine that reports no window must still get a context_max from the
+    provider-aware catalog (local static tables for non-probe providers), so
+    the status line never shows 0/— for a model whose limit is known."""
+    agent = types.SimpleNamespace(
+        model="accounts/fireworks/models/deepseek-v4-flash-0731",
+        session_total_tokens=0,
+        context_compressor=types.SimpleNamespace(
+            last_prompt_tokens=0,
+            context_length=0,
+            compression_count=0,
+        ),
+    )
+    usage = server._get_usage(agent)
+    assert usage.get("context_max", 0) > 0
+    assert "context_used" not in usage
+    assert "context_percent" not in usage
+
+
 # ---------------------------------------------------------------------------
 # Streaming TTS — per-turn pipeline + barge-in
 # ---------------------------------------------------------------------------

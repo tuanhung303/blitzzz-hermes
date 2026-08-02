@@ -4733,24 +4733,44 @@ def _get_usage(agent) -> dict:
         # impossible readings such as 1.9m/120k clamped to 100% (#50421).
         #
         # Per the issue, populate context_used/percent only from a *real*
-        # current-occupancy value and "leave it unknown otherwise" — so a falsy
-        # last_prompt_tokens (0 or missing, i.e. an engine that doesn't track
-        # per-window occupancy) intentionally emits no gauge rather than a
-        # fabricated 0% or the old cumulative reading. The built-in compressor
-        # always reports a real last_prompt_tokens once a turn runs, so it is
-        # unaffected.
+        # current-occupancy value — a falsy last_prompt_tokens (0 or missing,
+        # e.g. before the first turn or an engine that doesn't track per-window
+        # occupancy) must never produce a fabricated 0% or the old cumulative
+        # reading. The window itself (context_max) is factual model metadata
+        # and is emitted whenever known, so an idle session reads as 0/<limit>
+        # instead of 0/—; only the occupancy gauge stays gated on real usage.
+        # Matches the CLI status-bar path (cli.py _get_status_bar_snapshot).
         # Clamp the -1 "compression just ran, awaiting real usage" sentinel
         # (conversation_compression.py) to 0 so the transitional turn reads as
-        # unknown (no gauge) instead of leaking context_used=-1. Matches the
-        # CLI status-bar path (cli.py _get_status_bar_snapshot).
+        # freshly-empty instead of leaking context_used=-1.
         last_prompt = getattr(comp, "last_prompt_tokens", 0) or 0
         if last_prompt < 0:
             last_prompt = 0
         ctx_max = getattr(comp, "context_length", 0) or 0
-        if ctx_max and last_prompt:
-            usage["context_used"] = last_prompt
+        if not ctx_max:
+            # The engine doesn't report a window (external engine, or the
+            # built-in resolver found nothing for this model). Fall back to
+            # the provider-aware catalog so the status line still shows e.g.
+            # 0/260k instead of 0/— before the first turn.
+            try:
+                from agent.model_metadata import get_model_context_length
+                resolved = get_model_context_length(
+                    getattr(agent, "model", "") or "",
+                    base_url=getattr(agent, "base_url", "") or "",
+                    api_key=getattr(agent, "api_key", "") or "",
+                    provider=getattr(agent, "provider", "") or "",
+                    custom_providers=getattr(agent, "_custom_providers", None),
+                    config_context_length=getattr(agent, "_config_context_length", None),
+                )
+                if resolved and resolved > 0:
+                    ctx_max = int(resolved)
+            except Exception:
+                pass
+        if ctx_max:
             usage["context_max"] = ctx_max
-            usage["context_percent"] = max(0, min(100, round(last_prompt / ctx_max * 100)))
+            if last_prompt:
+                usage["context_used"] = last_prompt
+                usage["context_percent"] = max(0, min(100, round(last_prompt / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     # Live count of background/async subagents still running (delegate_task
     # batches + background single delegations). Mirrors the classic CLI status
