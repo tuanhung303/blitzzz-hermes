@@ -5,7 +5,7 @@ import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { MessageLine } from '../components/messageLine.js'
-import { toTranscriptMessages } from '../domain/messages.js'
+import { showStartupPanel, toTranscriptMessages } from '../domain/messages.js'
 import { upsert } from '../lib/messages.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
@@ -82,6 +82,14 @@ describe('toTranscriptMessages', () => {
     const result = toTranscriptMessages(rows)
     expect(result[0]?.kind).toBe('event')
     expect(result[0]?.text).toBe('background agent work finished')
+  })
+})
+
+describe('showStartupPanel', () => {
+  it('hides the startup panel only when the gateway explicitly disables it', () => {
+    expect(showStartupPanel()).toBe(true)
+    expect(showStartupPanel({ model: 'test', skills: {}, tools: {} })).toBe(true)
+    expect(showStartupPanel({ model: 'test', skills: {}, tools: {}, tui_startup_panel: false })).toBe(false)
   })
 })
 
