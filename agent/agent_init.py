@@ -1671,13 +1671,24 @@ def init_agent(
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore
-                agent._memory_store = MemoryStore(
+                memory_store = MemoryStore(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
                 )
-                agent._memory_store.load_from_disk()
-        except Exception:
-            pass  # Memory is optional -- don't break agent init
+                memory_store.load_from_disk()
+                agent._memory_store = memory_store
+        except Exception as _memory_error:
+            # Do not retain a store whose frozen snapshot may be incomplete.
+            # Keep the failure visible without logging file contents or error
+            # text that could contain sensitive paths/data.
+            agent._memory_store = None
+            agent._memory_enabled = False
+            agent._user_profile_enabled = False
+            logger.warning(
+                "Built-in memory initialization failed; disabling built-in "
+                "memory for this session (%s).",
+                type(_memory_error).__name__,
+            )
     
 
 
