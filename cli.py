@@ -2769,6 +2769,11 @@ def _install_skin_light_mode_hook() -> None:
     def _wrapped_get_color(self, key, fallback=""):
         value = _orig_get_color(self, key, fallback)
         try:
+            # A hand-authored paired palette is more reliable than remapping
+            # arbitrary base colors: custom skins often use near-white values
+            # that are not entries in the legacy remap table.
+            if _detect_light_mode() and key in self.light_colors:
+                return self.light_colors[key]
             return _maybe_remap_for_light_mode(value)
         except Exception:
             return value

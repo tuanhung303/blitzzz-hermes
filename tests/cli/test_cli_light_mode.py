@@ -104,3 +104,18 @@ class TestSkinConfigHook:
         assert skin.get_color("banner_text") == "#1A1A1A"
         assert skin.get_color("response_border") == "#9A6B00"
 
+    def test_light_palette_overrides_base_skin_color(self, cli_mod):
+        from hermes_cli.skin_engine import SkinConfig
+
+        skin = SkinConfig(
+            name="paired",
+            colors={"banner_text": "#FAFAFA"},
+            light_colors={"banner_text": "#18181B"},
+        )
+
+        cli_mod._LIGHT_MODE_CACHE = True
+        assert skin.get_color("banner_text") == "#18181B"
+
+        cli_mod._LIGHT_MODE_CACHE = False
+        assert skin.get_color("banner_text") == "#FAFAFA"
+
