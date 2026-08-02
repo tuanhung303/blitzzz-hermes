@@ -27,7 +27,7 @@ const textContent = (node: ReactNodeLike): string => {
   return ''
 }
 
-const findWaterTicker = (node: ReactNodeLike): React.ReactElement<{ busy?: boolean }> | null => {
+const findWaterTicker = (node: ReactNodeLike): React.ReactElement<{ busy?: boolean; color?: string }> | null => {
   if (node === null || node === undefined || typeof node === 'boolean') {
     return null
   }
@@ -48,7 +48,7 @@ const findWaterTicker = (node: ReactNodeLike): React.ReactElement<{ busy?: boole
     return null
   }
 
-  const element = node as React.ReactElement<{ busy?: boolean; children?: ReactNodeLike }>
+  const element = node as React.ReactElement<{ busy?: boolean; color?: string; children?: ReactNodeLike }>
 
   if (typeof element.type === 'function' && element.type.name === 'WaterTicker') {
     return element
@@ -124,13 +124,15 @@ describe('StatusRule', () => {
     expect(busy?.props.busy).toBe(true)
   })
 
-  it('uses warm water tones only while speculative compaction is pending or active', () => {
+  it('uses a warm-coral water wave only while speculative compaction is pending or active', () => {
     const queued = findWaterTicker(StatusRule({ ...baseProps, speculativeCompressionState: 'queued' }))
+    const preparing = findWaterTicker(StatusRule({ ...baseProps, speculativeCompressionState: 'preparing' }))
     const active = findWaterTicker(StatusRule({ ...baseProps, speculativeCompressionState: 'active' }))
     const installed = findWaterTicker(StatusRule({ ...baseProps, speculativeCompressionState: 'installed' }))
 
-    expect(queued?.props.color).toBe(DEFAULT_THEME.color.warn)
-    expect(active?.props.color).toBe(DEFAULT_THEME.color.error)
+    expect(queued?.props.color).toBe('#E98572')
+    expect(preparing?.props.color).toBe('#E98572')
+    expect(active?.props.color).toBe('#E98572')
     expect(installed?.props.color).toBe(DEFAULT_THEME.color.muted)
   })
 

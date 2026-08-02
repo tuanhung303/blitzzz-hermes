@@ -416,6 +416,10 @@ export const WATER_CELL_COUNT = 25
 // terminal-wide 60 FPS repaint loop. The phase step keeps the original wave
 // velocity, but exposes twice as many intermediate surface positions.
 const WATER_FRAME_MS = 60
+// Keep speculative work visible even under a monochrome skin. This transient
+// warm coral is scoped to the water ticker; it does not recolor general errors
+// or warnings elsewhere in the UI.
+const SPECULATIVE_COMPACTION_WATER_COLOR = '#E98572'
 
 const BRAILLE_DOTS = [
   [0x01, 0x08],
@@ -557,14 +561,7 @@ export function StatusRule({
       speculativeCompressionState === 'preparing' ||
       speculativeCompressionState === 'active'
 
-    const speculativeWaterColor =
-      speculativeCompressionState === 'queued'
-        ? t.color.warn
-        : speculativeCompressionState === 'preparing'
-          ? t.color.accent
-          : speculativeCompressionState === 'active'
-            ? t.color.error
-            : null
+    const speculativeWaterColor = speculativePending ? SPECULATIVE_COMPACTION_WATER_COLOR : null
 
     return (
       <Box height={1}>
