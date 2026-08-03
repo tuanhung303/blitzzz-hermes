@@ -87,7 +87,7 @@ class TestResolveAgentPlatform:
     def test_missing_source_falls_back_to_env_resolved_platform(self, clean_env):
         clean_env.setenv("HERMES_DESKTOP", "1")
         _srv = _reload_resolver()
-        assert _srv._resolve_agent_platform(None) == "desktop"
+        assert _srv._resolve_session_source(None) == "desktop"
 
 
 class TestSessionSourceFallback:
