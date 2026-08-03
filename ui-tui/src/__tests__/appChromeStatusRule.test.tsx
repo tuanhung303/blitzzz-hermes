@@ -57,6 +57,34 @@ const findWaterTicker = (node: ReactNodeLike): React.ReactElement<{ busy?: boole
   return findWaterTicker(element.props.children)
 }
 
+const findByName = (node: ReactNodeLike, name: string): React.ReactElement | null => {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return null
+  }
+
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findByName(child, name)
+
+      if (found) {
+        return found
+      }
+    }
+
+    return null
+  }
+
+  if (!React.isValidElement(node)) {
+    return null
+  }
+
+  if (typeof node.type === 'function' && (node.type as () => unknown).name === name) {
+    return node
+  }
+
+  return findByName(node.props.children, name)
+}
+
 const baseProps: Parameters<typeof StatusRule>[0] = {
   bgCount: 3,
   busy: false,
@@ -172,6 +200,16 @@ describe('StatusRule', () => {
 
     expect(rendered).toContain('65k/260k')
     expect(rendered).not.toContain('cmp 3')
+  })
+
+
+  it('shows the optimizing-ctx label while speculative compaction is pending', () => {
+    for (const state of ['queued', 'preparing', 'active']) {
+      const element = StatusRule({ ...baseProps, speculativeCompressionState: state })
+      expect(findByName(element, 'OptimizingCtx')).not.toBeNull()
+    }
+
+    expect(findByName(StatusRule(baseProps), 'OptimizingCtx')).toBeNull()
   })
 
 })

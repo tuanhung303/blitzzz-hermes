@@ -507,6 +507,17 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
+function OptimizingCtx({ color }: { color: string }) {
+  const [dots, setDots] = useState(0)
+
+  useEffect(() => {
+    const timer = setInterval(() => setDots((count) => (count + 1) % 4), 450)
+    return () => clearInterval(timer)
+  }, [])
+
+  return <Text color={color}>optimizing ctx{'.'.repeat(dots)}</Text>
+}
+
 export function StatusRule({
   battery,
   focusView,
@@ -577,9 +588,13 @@ export function StatusRule({
             />
           </Box>
           <Text color={t.color.border}>{' │ '}</Text>
-          <Text color={t.color.label} wrap="truncate-end">
-            {modelText}
-          </Text>
+          {speculativePending ? (
+            <OptimizingCtx color={t.color.accent} />
+          ) : (
+            <Text color={t.color.label} wrap="truncate-end">
+              {modelText}
+            </Text>
+          )}
           <Text color={t.color.border}>{' │ '}</Text>
           <Text color={t.color.muted} wrap="truncate-end">
             {usage.context_max
