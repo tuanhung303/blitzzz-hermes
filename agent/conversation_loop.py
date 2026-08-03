@@ -6425,6 +6425,14 @@ def run_conversation(
                             system_message,
                             _spec_admission_tokens,
                             effective_task_id,
+                            # Parity with the preflight path (turn_context.py):
+                            # a candidate that finished during the previous
+                            # tool's execution must be claimable at soft
+                            # pressure, not parked until normal/hard. In a
+                            # long tool loop the preflight runs once per turn,
+                            # so without this the candidate would expire
+                            # (max_age_seconds) and be re-prepared forever.
+                            allow_soft_ready=True,
                         )
 
                 if _post_tool_speculative_installed:
