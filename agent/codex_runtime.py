@@ -229,7 +229,20 @@ def _record_codex_app_server_compaction(
         compressor.compression_count = getattr(
             compressor, "compression_count", 0
         ) + 1
-        compressor.last_compression_rough_tokens = approx_tokens or 0
+        # last_compression_rough_tokens feeds the TUI gauge during the -1
+        # sentinel transition (awaiting the next real usage). On the Codex
+        # app-server route the admission estimate (approx_tokens) is the
+        # PRE-compaction size and would snap the gauge back up to the full
+        # context right after a commit. Prefer the turn's reported input
+        # (post-boundary occupancy) when the app server supplied usage; fall
+        # back to 0 so the gauge reads freshly-empty instead of pre-compact.
+        post_boundary_tokens = 0
+        usage_last = getattr(turn, "token_usage_last", None)
+        if isinstance(usage_last, dict) and usage_last:
+            post_boundary_tokens = _coerce_usage_int(
+                usage_last.get("inputTokens")
+            ) + _coerce_usage_int(usage_last.get("cachedInputTokens"))
+        compressor.last_compression_rough_tokens = post_boundary_tokens
         # The app server has already completed a real compaction boundary. Its
         # usage update (when supplied) is therefore the same real-vs-real
         # effectiveness verdict used by the normal compression path.

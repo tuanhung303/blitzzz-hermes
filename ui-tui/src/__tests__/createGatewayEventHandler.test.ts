@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { $tpsTarget, resetTps } from '../app/tpsStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
@@ -62,6 +63,7 @@ describe('createGatewayEventHandler', () => {
     resetOverlayState()
     resetUiState()
     resetTurnState()
+    resetTps()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
   })
@@ -2008,5 +2010,47 @@ describe('createGatewayEventHandler', () => {
       expect(getUiState().busy).toBe(true)
       expect(appended).toHaveLength(0)
     })
+  })
+
+  it('feeds the status-bar TPS meter from streamed message.delta text', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    vi.useFakeTimers()
+
+    try {
+      onEvent({ payload: { text: 'streaming chunk one. ' }, type: 'message.delta' } as any)
+      vi.advanceTimersByTime(300)
+      onEvent({ payload: { text: 'streaming chunk two with more content. ' }, type: 'message.delta' } as any)
+      vi.advanceTimersByTime(300)
+      onEvent({ payload: { text: 'and a third chunk to keep it moving. ' }, type: 'message.delta' } as any)
+      vi.advanceTimersByTime(300)
+
+      expect($tpsTarget.get()).toBeGreaterThan(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('restarts the TPS meter when deltas arrive for a different session', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    vi.useFakeTimers()
+
+    try {
+      onEvent({ payload: { text: 'session a content. ' }, session_id: 'a', type: 'message.delta' } as any)
+      vi.advanceTimersByTime(300)
+      onEvent({ payload: { text: 'more session a content. ' }, session_id: 'a', type: 'message.delta' } as any)
+      vi.advanceTimersByTime(300)
+      expect($tpsTarget.get()).toBeGreaterThan(0)
+
+      // A delta that belongs to a different session resets the meter so the
+      // new session's rate starts clean (and the old value can't bleed in).
+      onEvent({ payload: { text: 'x' }, session_id: 'b', type: 'message.delta' } as any)
+      expect($tpsTarget.get()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

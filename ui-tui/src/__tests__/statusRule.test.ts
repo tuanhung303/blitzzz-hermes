@@ -66,6 +66,7 @@ describe('statusBarSegments', () => {
       compactCtx: false,
       bar: true,
       duration: true,
+      tps: true,
       compressions: true,
       voice: true,
       bg: true,

@@ -1157,6 +1157,56 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     return result
 
 
+def _parse_service_tier_value(raw: object) -> tuple[bool, str | None]:
+    """Parse a service-tier value while preserving explicit normal."""
+    value = str(raw or "").strip().lower()
+    if not value or value in {"normal", "default", "standard", "off", "none"}:
+        return True, None
+    if value in {"fast", "priority", "on"}:
+        return True, "priority"
+    return False, None
+
+
+def resolve_service_tier_config(cfg: dict | None, model: str = "") -> str | None:
+    """Resolve per-model fast mode before the global service-tier fallback.
+
+    ``agent.service_tier_overrides`` accepts the same values as
+    ``agent.service_tier``. A matching explicit normal value disables a global
+    fast default for that model.
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    agent_cfg = cfg.get("agent")
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+
+    if not model:
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, str):
+            model = model_cfg.strip()
+        elif isinstance(model_cfg, dict):
+            model = str(
+                model_cfg.get("default") or model_cfg.get("model") or ""
+            ).strip()
+
+    overrides = agent_cfg.get("service_tier_overrides") or {}
+    if isinstance(overrides, dict) and model:
+        for variant in _canonical_model_variants(model):
+            if variant not in overrides:
+                continue
+            valid, tier = _parse_service_tier_value(overrides[variant])
+            if valid:
+                return tier
+
+    raw = agent_cfg.get("service_tier", "")
+    valid, tier = _parse_service_tier_value(raw)
+    if not valid and str(raw or "").strip():
+        import logging
+        logging.getLogger(__name__).warning(
+            "Unknown service_tier '%s', ignoring", raw
+        )
+    return tier if valid else None
+
+
 def is_termux() -> bool:
     """Return True when running inside a Termux (Android) environment.
 

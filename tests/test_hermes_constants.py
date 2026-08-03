@@ -476,6 +476,37 @@ class TestReasoningOverridesDefaultConfig:
         assert result2 == {"enabled": True, "effort": "low"}
 
 
+class TestResolveServiceTierConfig:
+    def test_per_model_fast_override_wins(self):
+        from hermes_constants import resolve_service_tier_config
+
+        cfg = {
+            "agent": {
+                "service_tier": "normal",
+                "service_tier_overrides": {"gpt-5.6-luna": "fast"},
+            }
+        }
+        assert resolve_service_tier_config(cfg, "gpt-5.6-luna") == "priority"
+        assert resolve_service_tier_config(cfg, "gpt-5.6-sol") is None
+
+    def test_per_model_normal_can_disable_global_fast(self):
+        from hermes_constants import resolve_service_tier_config
+
+        cfg = {
+            "agent": {
+                "service_tier": "fast",
+                "service_tier_overrides": {"gpt-5.6-sol": "normal"},
+            }
+        }
+        assert resolve_service_tier_config(cfg, "openai/gpt-5.6-sol") is None
+        assert resolve_service_tier_config(cfg, "gpt-5.6-luna") == "priority"
+
+    def test_default_config_declares_override_map(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["agent"]["service_tier_overrides"] == {}
+
+
 class TestSecureParentDir:
     """Tests for secure_parent_dir() — prevents chmod on / or top-level dirs."""
 
