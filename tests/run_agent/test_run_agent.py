@@ -2954,103 +2954,14 @@ class TestRunConversation:
         assert agent._thinking_prefill_retries == 0
         assert agent._mute_post_response is False
 
-    def test_post_tool_loop_schedules_and_installs_real_candidate(
-        self, agent, monkeypatch
-    ):
-        from agent.speculative_compression import (
-            SpeculativeCompressionManager,
-            SpeculativeCompressionSettings,
-        )
+    def _speculative_post_tool_turn(self, agent, monkeypatch, *, soft_only: bool):
+        """Shared scaffold for the two post-tool speculative admission tests.
 
-        self._setup_agent(agent)
-        agent.compression_enabled = True
-        agent.speculative_compression_enabled = True
-        agent.speculative_compression_settings = SpeculativeCompressionSettings(
-            enabled=True,
-            start_ratio=0.01,
-            hard_ratio=0.02,
-            hard_wait_seconds=0.5,
-        )
-        manager = SpeculativeCompressionManager(max_workers=1)
-        agent._speculative_compression_manager = manager
-        agent.context_compressor.last_prompt_tokens = 0
-        agent.context_compressor._protect_head_size = lambda _messages: 0
-        agent.context_compressor._find_tail_cut_by_tokens = (
-            lambda _messages, _head_end: 1
-        )
-        agent.context_compressor._align_boundary_forward = (
-            lambda _messages, cut: cut
-        )
-        statuses = []
-        agent.status_callback = lambda kind, text: statuses.append((kind, text))
-        compression_pressure = False
-
-        class DeterministicWorker:
-            _last_summary_fallback_used = False
-
-            def compress(self, messages, **_kwargs):
-                marker_index = next(
-                    index
-                    for index, message in enumerate(messages)
-                    if message.get("_speculative_tail_marker")
-                )
-                return [
-                    {"role": "user", "content": "worker-prepared summary"},
-                    *messages[marker_index:],
-                ]
-
-        monkeypatch.setattr(
-            "agent.speculative_compression.clone_builtin_compressor",
-            lambda _source: DeterministicWorker(),
-        )
-        monkeypatch.setattr(
-            "agent.speculative_compression.speculative_thresholds",
-            lambda _compressor, _settings: (1, 2),
-        )
-        def should_compress(_tokens):
-            return compression_pressure and agent._speculative_install_status != "installed"
-
-        def execute_tool(**_kwargs):
-            nonlocal compression_pressure
-            compression_pressure = True
-            return "search result"
-
-        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
-        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
-        resp2 = _mock_response(content="Done searching", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [resp1, resp2]
-
-        try:
-            with (
-                patch(
-                    "run_agent.handle_function_call",
-                    side_effect=execute_tool,
-                ),
-                patch.object(agent, "_persist_session"),
-                patch.object(agent, "_save_trajectory"),
-                patch.object(agent, "_cleanup_task_resources"),
-            ):
-                result = agent.run_conversation("search something")
-        finally:
-            manager.shutdown()
-
-        assert result["final_response"] == "Done searching"
-        assert result["messages"][0]["content"] == "worker-prepared summary"
-        assert agent._speculative_install_status == "installed"
-        assert any(kind == "speculative" and "queued" in text for kind, text in statuses)
-        assert any(
-            kind == "speculative" and "installed" in text for kind, text in statuses
-        )
-
-    def test_post_tool_claims_ready_candidate_at_soft_pressure_only(
-        self, agent, monkeypatch
-    ):
-        # Regression: a candidate that finishes during tool execution must be
-        # claimable at the post-tool check on SOFT pressure alone — the
-        # preflight only runs once per turn, so without allow_soft_ready on
-        # the post-tool path a long tool loop re-prepares forever (started →
-        # ready → expire → started) and never commits. should_compress stays
-        # False for the whole turn (no normal/hard pressure).
+        soft_only=True keeps ``should_compress`` False for the whole turn and
+        raises the hard trigger so the candidate is claimable only through the
+        soft admission path (allow_soft_ready); False flips normal pressure
+        after the tool executes (the legacy schedule+install behavior).
+        """
         from agent.speculative_compression import (
             SpeculativeCompressionManager,
             SpeculativeCompressionSettings,
@@ -3096,17 +3007,32 @@ class TestRunConversation:
             "agent.speculative_compression.clone_builtin_compressor",
             lambda _source: DeterministicWorker(),
         )
-        # Soft trigger of 1 (any request passes), hard trigger astronomically
-        # high so the turn never reaches hard/normal pressure.
-        monkeypatch.setattr(
-            "agent.speculative_compression.speculative_thresholds",
-            lambda _compressor, _settings: (1, 999_999_999),
-        )
+        if soft_only:
+            # Soft trigger of 1 (any request passes), hard trigger
+            # astronomically high so the turn never reaches hard/normal
+            # pressure.
+            monkeypatch.setattr(
+                "agent.speculative_compression.speculative_thresholds",
+                lambda _compressor, _settings: (1, 999_999_999),
+            )
+        else:
+            monkeypatch.setattr(
+                "agent.speculative_compression.speculative_thresholds",
+                lambda _compressor, _settings: (1, 2),
+            )
+        pressure = {"normal": False}
 
         def should_compress(_tokens):
-            return False
+            if soft_only:
+                return False
+            return (
+                pressure["normal"]
+                and agent._speculative_install_status != "installed"
+            )
 
         def execute_tool(**_kwargs):
+            if not soft_only:
+                pressure["normal"] = True
             return "search result"
 
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -3129,6 +3055,36 @@ class TestRunConversation:
             patch.object(agent, "_cleanup_task_resources"),
         ):
             result = agent.run_conversation("search something")
+
+        return result, statuses
+
+    def test_post_tool_loop_schedules_and_installs_real_candidate(
+        self, agent, monkeypatch
+    ):
+        result, statuses = self._speculative_post_tool_turn(
+            agent, monkeypatch, soft_only=False
+        )
+
+        assert result["final_response"] == "Done searching"
+        assert result["messages"][0]["content"] == "worker-prepared summary"
+        assert agent._speculative_install_status == "installed"
+        assert any(kind == "speculative" and "queued" in text for kind, text in statuses)
+        assert any(
+            kind == "speculative" and "installed" in text for kind, text in statuses
+        )
+
+    def test_post_tool_claims_ready_candidate_at_soft_pressure_only(
+        self, agent, monkeypatch
+    ):
+        # Regression: a candidate that finishes during tool execution must be
+        # claimable at the post-tool check on SOFT pressure alone — the
+        # preflight only runs once per turn, so without allow_soft_ready on
+        # the post-tool path a long tool loop re-prepares forever (started →
+        # ready → expire → started) and never commits. should_compress stays
+        # False for the whole turn (no normal/hard pressure).
+        result, statuses = self._speculative_post_tool_turn(
+            agent, monkeypatch, soft_only=True
+        )
 
         assert result["final_response"] == "Done searching"
         assert result["messages"][0]["content"] == "worker-prepared summary"

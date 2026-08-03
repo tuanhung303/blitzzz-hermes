@@ -488,13 +488,13 @@ def _notify_session_boundary(
         if event_type == "on_session_finalize":
             finalize_session(
                 session_id=session_id,
-                platform=_resolve_agent_platform(platform),
+                platform=_resolve_session_source(platform),
             )
         else:
             invoke_hook(
                 event_type,
                 session_id=session_id,
-                platform=_resolve_agent_platform(platform),
+                platform=_resolve_session_source(platform),
             )
     except Exception:
         pass
@@ -3538,10 +3538,6 @@ def _resolve_session_source(explicit: str | None) -> str:
     if explicit:
         return explicit
     return _resolve_session_platform()
-
-
-def _resolve_agent_platform(source: str | None) -> str:
-    return _resolve_session_source(source)
 
 
 def _config_model_target() -> tuple[str, str]:
@@ -6635,7 +6631,7 @@ def _make_agent(
         provider_sort=_pr.get("sort"),
         provider_require_parameters=_pr.get("require_parameters", False),
         provider_data_collection=_pr.get("data_collection"),
-        platform=_resolve_agent_platform(platform_override),
+        platform=_resolve_session_source(platform_override),
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,

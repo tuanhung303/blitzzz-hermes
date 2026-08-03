@@ -581,8 +581,6 @@ DEFAULT_CONFIG = {
             "max_age_seconds": 180,
             "hard_wait_seconds": 2,
             "during_tool_wait": True,
-            # Reserved for a later idle scheduler; v1 deliberately ignores it.
-            "during_idle": False,
         },
         "progress_notices": False,    # opt-in (#52995): when True, routine compression
                                       # progress statuses (compacting/preflight/pre-API/

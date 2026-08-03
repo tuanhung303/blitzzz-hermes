@@ -31,11 +31,7 @@ _STATUS_PREFIX = "[speculative:"
 
 @dataclass(frozen=True)
 class SpeculativeCompressionSettings:
-    """Normalized feature settings.
-
-    ``during_idle`` is retained as a forward-compatible config field, but v1
-    intentionally never schedules idle work.
-    """
+    """Normalized feature settings."""
 
     enabled: bool = False
     start_ratio: float = 0.70
@@ -43,7 +39,6 @@ class SpeculativeCompressionSettings:
     max_age_seconds: float = 180.0
     hard_wait_seconds: float = 2.0
     during_tool_wait: bool = True
-    during_idle: bool = False
 
 
 DEFAULT_SPECULATIVE_COMPRESSION_SETTINGS = SpeculativeCompressionSettings()
@@ -173,9 +168,6 @@ def normalize_speculative_compression_settings(
             defaults.during_tool_wait,
             log,
             "during_tool_wait",
-        ),
-        during_idle=_parse_bool(
-            values.get("during_idle"), defaults.during_idle, log, "during_idle"
         ),
     )
 
@@ -436,10 +428,6 @@ class SpeculativeSnapshot:
     captured_at: float
     compressor_fingerprint: str | None = None
 
-    @property
-    def source_message_count(self) -> int:
-        return self.original_count
-
 
 def capture_snapshot(
     messages: List[Dict[str, Any]],
@@ -502,14 +490,6 @@ class SpeculativeCandidate:
     made_progress: bool | None = None
     savings_pct: float | None = None
     compressor_fingerprint: str | None = None
-
-    @property
-    def source_session_id(self) -> str:
-        return self.session_id
-
-    @property
-    def compressed_prefix_result(self) -> Tuple[Mapping[str, Any], ...]:
-        return self.compressed_prefix
 
     def is_expired(self, max_age_seconds: float, *, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
