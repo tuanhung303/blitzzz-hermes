@@ -4842,6 +4842,30 @@ def _sync_session_key_after_compress(
             pass
 
 
+_live_usage_throttle_ts: dict = {}
+
+
+def _maybe_emit_live_usage(sid: str, session) -> None:
+    """Stream a near-live ``session.info`` (usage gauge) after tool results.
+
+    Tool loops can complete many calls per second; the transcript estimate is
+    only "near-live", so throttle to ~1 Hz per session. Emits unconditionally
+    (even when tool progress UI is off) because the usage gauge is the
+    consumer.
+    """
+    if session is None:
+        return
+    now = time.monotonic()
+    if now - _live_usage_throttle_ts.get(sid, 0.0) < 1.0:
+        return
+    _live_usage_throttle_ts[sid] = now
+    try:
+        agent = session.get("agent")
+        _emit("session.info", sid, _session_info(agent, session))
+    except Exception:
+        pass
+
+
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
@@ -4876,6 +4900,20 @@ def _get_usage(agent) -> dict:
         last_prompt = getattr(comp, "last_prompt_tokens", 0) or 0
         if last_prompt < 0:
             last_prompt = 0
+        # Between model rounds (tool results were appended after the last LLM
+        # reply), last_prompt_tokens still reflects the previous round. Estimate
+        # the live transcript so the usage gauge keeps moving during long tool
+        # loops instead of freezing at the last completed round.
+        try:
+            from agent.context_compressor import estimate_messages_tokens_rough
+
+            _live_estimate = estimate_messages_tokens_rough(
+                getattr(agent, "messages", None) or []
+            )
+            if _live_estimate and _live_estimate > last_prompt:
+                last_prompt = _live_estimate
+        except Exception:
+            pass
         ctx_max = getattr(comp, "context_length", 0) or 0
         if not ctx_max:
             # The engine doesn't report a window (external engine, or the
@@ -5406,6 +5444,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         pass
     if _tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name):
         _emit("tool.complete", sid, payload)
+    # Near-live usage gauge: push a throttled session.info after each tool
+    # result so the status line keeps moving between model rounds.
+    _maybe_emit_live_usage(sid, session)
 
 
 def _on_tool_progress(
