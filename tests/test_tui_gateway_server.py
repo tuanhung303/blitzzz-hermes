@@ -1066,7 +1066,7 @@ def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
     server._on_tool_start("clarify-off-test", "tool-clarify", "clarify", args)
     server._on_tool_complete("clarify-off-test", "tool-clarify", "clarify", args, result)
 
-    assert [event[0] for event in events] == ["tool.start", "tool.complete"]
+    assert [event[0] for event in events] == ["tool.start", "tool.complete", "session.info"]
     assert events[0][2]["name"] == "clarify"
     assert events[0][2]["tool_id"] == "tool-clarify"
     assert events[1][2]["result"]["user_response"] == "A"
@@ -1086,7 +1086,9 @@ def test_tui_non_interactive_tool_lifecycle_stays_hidden_when_tool_progress_off(
     server._on_tool_start("terminal-off-test", "tool-1", "terminal", {"command": "pwd"})
     server._on_tool_complete("terminal-off-test", "tool-1", "terminal", {"command": "pwd"}, "done")
 
-    assert events == []
+    # Tool lifecycle stays hidden, but the near-live usage gauge still emits a
+    # throttled session.info after the result.
+    assert [event[0] for event in events] == ["session.info"]
 
 
 def test_dispatch_rejects_non_object_request():
