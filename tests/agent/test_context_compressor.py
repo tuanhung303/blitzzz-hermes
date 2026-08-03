@@ -1003,7 +1003,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
         # Default mode: abort flag must NOT fire.
         assert c._last_compress_aborted is False
         assert any(
-            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
+            isinstance(m.get("content"), str) and "## Continuation State at Cut" in m["content"]
             for m in result
         )
 
@@ -1038,7 +1038,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
         with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
             result = c.compress(msgs)
 
-        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        fallback = next(m["content"] for m in result if "## Continuation State at Cut" in m.get("content", ""))
         assert "Called tool(s): read_file" in fallback
         assert "/tmp/project/app.py" in fallback
         assert secret not in fallback

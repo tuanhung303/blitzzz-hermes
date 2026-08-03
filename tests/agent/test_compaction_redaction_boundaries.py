@@ -179,7 +179,7 @@ def test_previous_summary_redacted_before_iterative_prompt_reentry():
 
     assert result is not None
     prompt = mock_call.call_args.kwargs["messages"][0]["content"]
-    assert "PREVIOUS SUMMARY:" in prompt
+    assert "PREVIOUS CHECKPOINT — OLDER SUMMARY SOURCE:" in prompt
     _assert_clean(prompt)
     # After generation, _previous_summary holds the new (clean) LLM output —
     # the leaked secret must not have survived anywhere in it.
@@ -219,5 +219,5 @@ def test_resumed_handoff_summary_redacted_before_iterative_prompt():
         c.compress(messages)
 
     prompt = mock_call.call_args.kwargs["messages"][0]["content"]
-    assert "PREVIOUS SUMMARY:" in prompt
+    assert "PREVIOUS CHECKPOINT — OLDER SUMMARY SOURCE:" in prompt
     _assert_clean(prompt)
