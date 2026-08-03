@@ -458,6 +458,108 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
     assert server._session_info(None, session)["model"] == "host-model"
 
 
+def test_usage_uses_compression_estimate_after_commit_without_real_usage():
+    class _Comp:
+        context_length = 524_288
+        last_prompt_tokens = -1
+        last_compression_rough_tokens = 164_354
+        compression_count = 1
+
+    class _Agent:
+        model = "test-model"
+        session_id = "sid"
+        context_compressor = _Comp()
+        session_input_tokens = 0
+        session_output_tokens = 0
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+        session_api_calls = 0
+
+    usage = server._get_usage(_Agent())
+
+    assert usage["context_used"] == 164_354
+
+
+def test_usage_estimates_the_live_request_from_session_history():
+    from agent.model_metadata import estimate_request_tokens_rough
+
+    class _Comp:
+        context_length = 524_288
+        last_prompt_tokens = 10
+        last_compression_rough_tokens = 0
+        compression_count = 0
+
+    class _Agent:
+        model = "test-model"
+        session_id = "sid"
+        context_compressor = _Comp()
+        session_input_tokens = 0
+        session_output_tokens = 0
+        session_prompt_tokens = 10
+        session_completion_tokens = 0
+        session_total_tokens = 10
+        session_api_calls = 1
+        _cached_system_prompt = "system prompt"
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "tool",
+                    "description": "a tool",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+
+    history = [{"role": "user", "content": "x" * 400}]
+    session = {"agent": _Agent(), "history": history}
+    expected = estimate_request_tokens_rough(
+        history,
+        system_prompt="system prompt",
+        tools=session["agent"].tools,
+    )
+
+    server._sessions["sid"] = session
+    try:
+        usage = server._get_usage(session["agent"])
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert usage["context_used"] == expected
+    assert usage["context_used"] > 10
+
+
+def test_compacted_status_forces_session_info_and_resets_usage_throttle(monkeypatch):
+    sid = "compacted-sid"
+    session = {"agent": object()}
+    emitted_info = []
+    events = []
+    server._live_usage_throttle_ts[sid] = time.monotonic()
+    monkeypatch.setattr(
+        server,
+        "_emit_session_info_for_session",
+        lambda event_sid, event_session: emitted_info.append((event_sid, event_session)),
+    )
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, event_sid, payload=None: events.append((event, event_sid, payload)),
+    )
+    server._sessions[sid] = session
+    try:
+        server._status_update(sid, "compacted", "Context compaction complete")
+    finally:
+        server._sessions.pop(sid, None)
+        server._live_usage_throttle_ts.pop(sid, None)
+
+    assert emitted_info == [(sid, session)]
+    assert sid not in server._live_usage_throttle_ts
+    assert events == [
+        ("status.update", sid, {"kind": "compacted", "text": "Context compaction complete"})
+    ]
+
+
 def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
     class _ImmediateThread:
         def __init__(self, target=None, daemon=None, **_kwargs):

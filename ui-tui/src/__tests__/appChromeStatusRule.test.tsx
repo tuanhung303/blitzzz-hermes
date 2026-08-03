@@ -1,7 +1,13 @@
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { StatusRule, WATER_CELL_COUNT, waterFrame } from '../components/appChrome.js'
+import {
+  OPTIMIZING_DOTS_WIDTH,
+  StatusRule,
+  WATER_CELL_COUNT,
+  optimizingLabel,
+  waterFrame
+} from '../components/appChrome.js'
 import { DEFAULT_THEME } from '../theme.js'
 import type { Usage } from '../types.js'
 
@@ -204,12 +210,23 @@ describe('StatusRule', () => {
 
 
   it('shows the optimizing-ctx label while speculative compaction is pending', () => {
-    for (const state of ['queued', 'preparing', 'active']) {
+    for (const state of ['queued', 'preparing', 'active'] as const) {
       const element = StatusRule({ ...baseProps, speculativeCompressionState: state })
       expect(findByName(element, 'OptimizingCtx')).not.toBeNull()
     }
 
     expect(findByName(StatusRule(baseProps), 'OptimizingCtx')).toBeNull()
+  })
+
+  it('pads the optimizing-ctx dots to a constant width so the status tail never shifts', () => {
+    // All 4 animation phases must occupy exactly OPTIMIZING_DOTS_WIDTH columns:
+    // `...` / `..` / `.` / `   ` — the unpadded form shrank the row every tick
+    // and dragged the ` │ ctx` tail (and everything after it) left/right.
+    const widths = new Set([0, 1, 2, 3].map(dots => optimizingLabel(dots).length))
+
+    expect(widths.size).toBe(1)
+    expect(optimizingLabel(3)).toBe('optimizing ctx...')
+    expect(optimizingLabel(0)).toBe(`optimizing ctx${' '.repeat(OPTIMIZING_DOTS_WIDTH)}`)
   })
 
 })

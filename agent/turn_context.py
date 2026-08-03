@@ -55,13 +55,15 @@ def _try_install_speculative_candidate(
     system_message: str,
     approx_tokens: int,
     task_id: str,
+    *,
+    allow_soft_ready: bool = False,
 ) -> tuple[List[Dict[str, Any]], Optional[str], bool, bool]:
-    """Consume a ready candidate only at soft/hard foreground pressure.
+    """Consume a ready candidate at foreground pressure.
 
-    The final lock/fingerprint validation lives in ``compress_context``.  The
-    boolean pair is ``(installed, hard_pressure)``; callers use hard pressure
-    to force the existing synchronous compression fallback when no candidate
-    is usable.
+    The preflight may opt into a nonblocking soft-threshold claim so a
+    candidate that finished after the previous tool result is committed on the
+    next API call. The final lock/fingerprint validation lives in
+    ``compress_context``.
     """
 
     settings = getattr(agent, "speculative_compression_settings", None)
@@ -116,7 +118,8 @@ def _try_install_speculative_candidate(
         normal_pressure = bool(compressor.should_compress(approx_tokens))
     except Exception:
         normal_pressure = False
-    if not over_hard and not normal_pressure:
+    soft_pressure = int(approx_tokens or 0) >= _soft_trigger
+    if not over_hard and not normal_pressure and not (allow_soft_ready and soft_pressure):
         return messages, None, False, False
 
     wait_seconds = settings.hard_wait_seconds if over_hard else 0.0
@@ -972,6 +975,7 @@ def build_turn_context(
                 system_message,
                 _preflight_tokens,
                 effective_task_id,
+                allow_soft_ready=True,
             )
             if _speculative_preflight_compressed:
                 _preflight_compressed = True

@@ -507,6 +507,13 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
+// Constant-width label: the dot animation always reserves OPTIMIZING_DOTS_WIDTH
+// columns so the ` │ ctx` tail never shifts while `...` cycles to empty.
+export const OPTIMIZING_DOTS_WIDTH = 3
+
+export const optimizingLabel = (dots: number): string =>
+  `optimizing ctx${'.'.repeat(dots % 4).padEnd(OPTIMIZING_DOTS_WIDTH)}`
+
 function OptimizingCtx({ color }: { color: string }) {
   const [dots, setDots] = useState(0)
 
@@ -515,7 +522,11 @@ function OptimizingCtx({ color }: { color: string }) {
     return () => clearInterval(timer)
   }, [])
 
-  return <Text color={color}>optimizing ctx{'.'.repeat(dots)}</Text>
+  return (
+    <Text color={color} italic>
+      {optimizingLabel(dots)}
+    </Text>
+  )
 }
 
 export function StatusRule({

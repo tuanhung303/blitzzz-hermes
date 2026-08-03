@@ -1709,6 +1709,14 @@ def _status_update(sid: str, kind: str, text: str | None = None):
 
         if COMPACTION_STATUS_MARKER in body:
             out_kind = "compacting"
+    # Compaction bookkeeping is complete before the terminal ``compacted``
+    # callback reaches the gateway. Publish usage directly instead of routing
+    # through the near-live throttle, then allow the next real usage update.
+    if kind == "compacted":
+        _live_usage_throttle_ts.pop(sid, None)
+        session = _sessions.get(sid)
+        if session is not None:
+            _emit_session_info_for_session(sid, session)
     payload = {"kind": out_kind, "text": body}
     if state is not None:
         payload["state"] = state
@@ -4736,7 +4744,12 @@ def _maybe_emit_live_usage(sid: str, session) -> None:
         pass
 
 
-def _get_usage(agent) -> dict:
+def _get_usage(agent, session: dict | None = None) -> dict:
+    if session is None:
+        for candidate in _sessions.values():
+            if candidate.get("agent") is agent:
+                session = candidate
+                break
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
         "model": getattr(agent, "model", "") or "",
@@ -4764,24 +4777,44 @@ def _get_usage(agent) -> dict:
         # and is emitted whenever known, so an idle session reads as 0/<limit>
         # instead of 0/—; only the occupancy gauge stays gated on real usage.
         # Matches the CLI status-bar path (cli.py _get_status_bar_snapshot).
-        # Clamp the -1 "compression just ran, awaiting real usage" sentinel
-        # (conversation_compression.py) to 0 so the transitional turn reads as
-        # freshly-empty instead of leaking context_used=-1.
-        last_prompt = getattr(comp, "last_prompt_tokens", 0) or 0
+        # A successful compaction leaves last_prompt_tokens at -1 until the
+        # provider reports the next request; use the committed rough estimate
+        # for that transition instead of exposing a stale or negative gauge.
+        raw_last_prompt = getattr(comp, "last_prompt_tokens", 0) or 0
+        use_live_estimate = raw_last_prompt >= 0
+        last_prompt = raw_last_prompt
         if last_prompt < 0:
-            last_prompt = 0
-        # Between model rounds (tool results were appended after the last LLM
-        # reply), last_prompt_tokens still reflects the previous round. Estimate
-        # the live transcript so the usage gauge keeps moving during long tool
-        # loops instead of freezing at the last completed round.
+            last_prompt = getattr(comp, "last_compression_rough_tokens", 0) or 0
+        # Match the compaction admission quantity: use the current transcript
+        # plus the active system prompt and tool schemas when the gateway owns
+        # a live session. AIAgent deliberately has no public ``messages`` field.
         try:
-            from agent.context_compressor import estimate_messages_tokens_rough
+            live_messages = None
+            if isinstance(session, dict):
+                history_lock = session.get("history_lock")
+                if history_lock is not None:
+                    with history_lock:
+                        live_messages = list(session.get("history") or [])
+                else:
+                    live_messages = list(session.get("history") or [])
+            if not live_messages:
+                live_messages = list(getattr(agent, "_session_messages", None) or [])
+            if live_messages and use_live_estimate:
+                mirror = _metadata_mirror(session)
+                live_system_prompt = (
+                    mirror.get("system_prompt")
+                    or getattr(agent, "_cached_system_prompt", "")
+                    or ""
+                )
+                from agent.model_metadata import estimate_request_tokens_rough
 
-            _live_estimate = estimate_messages_tokens_rough(
-                getattr(agent, "messages", None) or []
-            )
-            if _live_estimate and _live_estimate > last_prompt:
-                last_prompt = _live_estimate
+                live_estimate = estimate_request_tokens_rough(
+                    live_messages,
+                    system_prompt=live_system_prompt,
+                    tools=getattr(agent, "tools", None) or None,
+                )
+                if live_estimate > 0:
+                    last_prompt = live_estimate
         except Exception:
             pass
         ctx_max = getattr(comp, "context_length", 0) or 0

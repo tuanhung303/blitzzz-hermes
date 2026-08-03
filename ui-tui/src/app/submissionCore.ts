@@ -71,6 +71,14 @@ export function submitPrompt(
     deps.setLastUserMsg(text)
 
     if (show) {
+      // A mid-turn submit (busy-input interrupt/redirect) appends the new
+      // user bubble to the SETTLED transcript while the old turn's tool
+      // trail is still buffered in the live streaming area. If the trail
+      // flushed after the bubble (at the redirected turn's message.complete)
+      // it would render BELOW the message that chronologically followed it.
+      // Settle the old turn's observed trail into the transcript FIRST so
+      // the bubble lands after it; idle submits settle nothing.
+      turnController.checkpointBeforeUserBubble().forEach(deps.appendMessage)
       deps.appendMessage({ role: 'user', text: displayOverride || displayText })
     }
 
