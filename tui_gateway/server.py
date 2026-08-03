@@ -1836,9 +1836,21 @@ def _status_update(sid: str, kind: str, text: str | None = None):
         session = _sessions.get(sid)
         if session is not None:
             _emit_session_info_for_session(sid, session)
-    payload = {"kind": out_kind, "text": body}
+    payload: dict = {"kind": out_kind, "text": body}
     if state is not None:
         payload["state"] = state
+    # Speculative status text carries an estimate ("estimated ~322,371
+    # tokens"); surface the number structurally so the status line can show
+    # the summary model's working set instead of a static dots animation.
+    if out_kind == "speculative":
+        import re as _re
+
+        _m = _re.search(r"~([\d,]+)\s+tokens", body)
+        if _m:
+            try:
+                payload["tokens"] = int(_m.group(1).replace(",", ""))
+            except ValueError:
+                pass
     _emit("status.update", sid, payload)
 
 
@@ -4007,17 +4019,34 @@ def _load_reasoning_config(model: str = "") -> dict | None:
     return resolve_reasoning_config(_load_cfg(), model)
 
 
-def _load_service_tier() -> str | None:
-    raw = (
-        str((_load_cfg().get("agent") or {}).get("service_tier", "") or "")
-        .strip()
-        .lower()
-    )
-    if not raw or raw in {"normal", "default", "standard", "off", "none"}:
-        return None
-    if raw in {"fast", "priority", "on"}:
-        return "priority"
-    return None
+def _load_service_tier(model: str = "") -> str | None:
+    """Load per-model fast mode before the global service-tier fallback."""
+    from hermes_constants import resolve_service_tier_config
+
+    return resolve_service_tier_config(_load_cfg(), model)
+
+
+def _service_tier_request_overrides(model: str, service_tier: str | None) -> dict:
+    """Translate an effective tier into provider-specific request overrides."""
+    if service_tier != "priority":
+        return {}
+    try:
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        return dict(resolve_fast_mode_overrides(model) or {})
+    except Exception:
+        return {}
+
+
+def _apply_model_service_tier(agent, model: str) -> None:
+    """Apply a model's configured fast default without dropping other overrides."""
+    service_tier = _load_service_tier(model)
+    current = dict(getattr(agent, "request_overrides", {}) or {})
+    current.pop("service_tier", None)
+    current.pop("speed", None)
+    current.update(_service_tier_request_overrides(model, service_tier))
+    agent.service_tier = service_tier
+    agent.request_overrides = current
 
 
 def _load_provider_routing() -> dict:
@@ -4298,6 +4327,10 @@ def _snapshot_agent_model_runtime(agent) -> dict:
         "api_key": getattr(agent, "api_key", ""),
         "base_url": getattr(agent, "base_url", ""),
         "api_mode": getattr(agent, "api_mode", ""),
+        "service_tier": getattr(agent, "service_tier", None),
+        "request_overrides": copy.deepcopy(
+            getattr(agent, "request_overrides", {}) or {}
+        ),
         "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
     }
 
@@ -4306,17 +4339,17 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
     """Restore an agent model runtime captured before a one-turn override."""
     if not snapshot or agent is None:
         return
+    restored = False
     primary = snapshot.get("primary_runtime")
     if primary and hasattr(agent, "_restore_primary_runtime"):
         try:
             agent._primary_runtime = copy.deepcopy(primary)
             agent._fallback_activated = True
             agent._rate_limited_until = 0
-            if agent._restore_primary_runtime():
-                return
+            restored = bool(agent._restore_primary_runtime())
         except Exception:
             logger.debug("TUI one-turn model restore via primary runtime failed", exc_info=True)
-    if hasattr(agent, "switch_model"):
+    if not restored and hasattr(agent, "switch_model"):
         agent.switch_model(
             new_model=snapshot.get("model", ""),
             new_provider=snapshot.get("provider", ""),
@@ -4324,6 +4357,8 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             base_url=snapshot.get("base_url", ""),
             api_mode=snapshot.get("api_mode", ""),
         )
+    agent.service_tier = snapshot.get("service_tier")
+    agent.request_overrides = copy.deepcopy(snapshot.get("request_overrides") or {})
 
 
 def _apply_model_switch(
@@ -4497,6 +4532,17 @@ def _apply_model_switch(
                 f"Model switch to {result.new_model} failed ({exc}); "
                 f"staying on {getattr(agent, 'model', current_model)}."
             ) from exc
+        # Fast-default resolution must never turn a successful provider/model
+        # switch into a failed switch. Explicit session /fast choices still win.
+        if session.get("create_service_tier_override") is None:
+            try:
+                _apply_model_service_tier(agent, result.new_model)
+            except Exception:
+                logger.warning(
+                    "Unable to apply service-tier default for %s",
+                    result.new_model,
+                    exc_info=True,
+                )
         _restart_slash_worker(sid, session)
         _persist_live_session_runtime(session)
         _persist_live_session_system_prompt(session)
@@ -4745,6 +4791,7 @@ def _compress_session_history(
 
     if partial and tail:
         compressed = rejoin_compressed_head_and_tail(compressed, tail)
+    _dropped = False
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:
             # External mutation during compaction — drop the compressed
@@ -4753,12 +4800,14 @@ def _compress_session_history(
                 agent,
                 committed=False,
             )
-            usage = _get_usage(agent)
-            return 0, usage
-        session["history"] = compressed
-        session["history_version"] = history_version + 1
+            _dropped = True
+        else:
+            session["history"] = compressed
+            session["history_version"] = history_version + 1
+    # _get_usage acquires session["history_lock"] itself; call it outside the
+    # lock above (non-reentrant Lock) or the mismatch branch self-deadlocks.
     usage = _get_usage(agent)
-    return len(history) - len(compressed), usage
+    return (0 if _dropped else len(history) - len(compressed)), usage
 
 
 def _sync_session_key_after_compress(
@@ -4917,36 +4966,44 @@ def _get_usage(agent, session: dict | None = None) -> dict:
             last_prompt = getattr(comp, "last_compression_rough_tokens", 0) or 0
         # Match the compaction admission quantity: use the current transcript
         # plus the active system prompt and tool schemas when the gateway owns
-        # a live session. AIAgent deliberately has no public ``messages`` field.
-        try:
-            live_messages = None
-            if isinstance(session, dict):
-                history_lock = session.get("history_lock")
-                if history_lock is not None:
-                    with history_lock:
-                        live_messages = list(session.get("history") or [])
-                else:
-                    live_messages = list(session.get("history") or [])
-            if not live_messages:
+        # a live session. Prefer the agent's live in-turn transcript
+        # (agent._session_messages, reassigned after every tool result);
+        # session["history"] is a pre-turn snapshot rewritten only at turn end,
+        # so preferring it would freeze the gauge for the whole tool loop.
+        # AIAgent deliberately has no public ``messages`` field. Skipped
+        # entirely on the -1 sentinel transition (report the committed rough
+        # estimate above instead of doing discarded copy work).
+        if use_live_estimate:
+            try:
                 live_messages = list(getattr(agent, "_session_messages", None) or [])
-            if live_messages and use_live_estimate:
-                mirror = _metadata_mirror(session)
-                live_system_prompt = (
-                    mirror.get("system_prompt")
-                    or getattr(agent, "_cached_system_prompt", "")
-                    or ""
-                )
-                from agent.model_metadata import estimate_request_tokens_rough
+                if not live_messages and isinstance(session, dict):
+                    history_lock = session.get("history_lock")
+                    if history_lock is not None:
+                        with history_lock:
+                            live_messages = list(session.get("history") or [])
+                    else:
+                        live_messages = list(session.get("history") or [])
+                if live_messages:
+                    mirror = _metadata_mirror(session)
+                    live_system_prompt = (
+                        mirror.get("system_prompt")
+                        or getattr(agent, "_cached_system_prompt", "")
+                        or ""
+                    )
+                    from agent.model_metadata import estimate_request_tokens_rough
 
-                live_estimate = estimate_request_tokens_rough(
-                    live_messages,
-                    system_prompt=live_system_prompt,
-                    tools=getattr(agent, "tools", None) or None,
-                )
-                if live_estimate > 0:
-                    last_prompt = live_estimate
-        except Exception:
-            pass
+                    live_estimate = estimate_request_tokens_rough(
+                        live_messages,
+                        system_prompt=live_system_prompt,
+                        tools=getattr(agent, "tools", None) or None,
+                    )
+                    # Monotonic floor: never report an estimate below the last
+                    # real provider occupancy (rough estimates under-count
+                    # images/CJK), or the gauge under-reports pressure.
+                    if live_estimate > 0:
+                        last_prompt = max(last_prompt, live_estimate)
+            except Exception:
+                pass
         ctx_max = getattr(comp, "context_length", 0) or 0
         if not ctx_max:
             # The engine doesn't report a window (external engine, or the
@@ -6533,6 +6590,14 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
+    _effective_service_tier = (
+        service_tier_override
+        if service_tier_override is not None
+        else _load_service_tier(str(model or ""))
+    )
+    _effective_request_overrides = _service_tier_request_overrides(
+        str(model or ""), _effective_service_tier
+    )
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
@@ -6554,11 +6619,8 @@ def _make_agent(
             if reasoning_config_override is not None
             else _load_reasoning_config(str(model or ""))
         ),
-        service_tier=(
-            service_tier_override
-            if service_tier_override is not None
-            else _load_service_tier()
-        ),
+        service_tier=_effective_service_tier,
+        request_overrides=_effective_request_overrides,
         enabled_toolsets=_load_enabled_toolsets(),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same

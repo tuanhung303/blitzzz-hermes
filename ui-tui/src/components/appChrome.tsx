@@ -6,6 +6,7 @@ import unicodeSpinners from 'unicode-animations'
 import { $delegationState } from '../app/delegationStore.js'
 import type { BatteryInfo, IndicatorStyle, Notice, SpeculativeCompressionState } from '../app/interfaces.js'
 import { $isStatusRuleOccluded } from '../app/overlayStore.js'
+import { $tpsTarget } from '../app/tpsStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
@@ -14,6 +15,7 @@ import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
+import { formatTps } from '../lib/tps.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
@@ -295,6 +297,7 @@ export interface StatusBarSegments {
   compressions: boolean
   duration: boolean
   subagents: boolean
+  tps: boolean
   voice: boolean
 }
 
@@ -305,6 +308,7 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     compactCtx: w < 72,
     bar: w >= 72,
     duration: w >= 76,
+    tps: w >= TPS_MIN_COLS,
     compressions: w >= 80,
     voice: w >= 84,
     bg: w >= 88,
@@ -545,19 +549,85 @@ export const OPTIMIZING_DOTS_WIDTH = 3
 export const optimizingLabel = (dots: number): string =>
   `optimizing ctx${'.'.repeat(dots % 4).padEnd(OPTIMIZING_DOTS_WIDTH)}`
 
-function OptimizingCtx({ color }: { color: string }) {
+// When the speculative summary estimate is known (backend surfaces it in the
+// status.update payload as `tokens`), show the summary model's working set
+// instead of the dots. A plain thousands separator keeps the label compact.
+export const optimizingTokensLabel = (tokens: number): string =>
+  `optimizing ctx ${Math.round(tokens / 1000)}k`
+
+function OptimizingCtx({ color, tokens }: { color: string; tokens: null | number }) {
   const [dots, setDots] = useState(0)
 
   useEffect(() => {
     const timer = setInterval(() => setDots((count) => (count + 1) % 4), 450)
+
     return () => clearInterval(timer)
   }, [])
 
+  // Token count wins over the dots when present (and sits at a stable width);
+  // the dot tail only animates while no estimate has arrived yet.
+  const label =
+    tokens != null && tokens > 0 ? optimizingTokensLabel(tokens) : optimizingLabel(dots)
+
   return (
-    <Text color={color} italic>
-      {optimizingLabel(dots)}
+    <Text color={color} dim italic>
+      {label}
     </Text>
   )
+}
+
+// TPS meter cadence + ease. The eased roll toward the EMA target is what
+// makes the number "run evenly" (pi-agent-flow's value-flash idea, minus the
+// character scramble — a rolling numeric readout fits the status bar cleaner
+// than a glyph glitch). Ticks only while the value is moving; once settled
+// the interval is cleared so an idle status bar never repaints on its own.
+const TPS_TICK_MS = 120
+const TPS_EASE = 0.4
+
+// Terminal width below which the ` · N.N t/s` segment is dropped (shares the
+// duration breakpoint — the readout tail sheds before the context bar).
+export const TPS_MIN_COLS = 76
+
+function TpsMeter({ show, t }: { show: boolean; t: Theme }) {
+  const target = useStore($tpsTarget)
+  const [display, setDisplay] = useState(0)
+  const displayRef = useRef(0)
+
+  useEffect(() => {
+    if (!show || target <= 0) {
+      displayRef.current = 0
+      setDisplay(0)
+
+      return
+    }
+
+    const id = setInterval(() => {
+      const current = displayRef.current
+      const next = current + (target - current) * TPS_EASE
+
+      if (Math.abs(target - next) < 0.05) {
+        displayRef.current = target
+        setDisplay(target)
+        clearInterval(id)
+      } else {
+        displayRef.current = next
+        setDisplay(next)
+      }
+    }, TPS_TICK_MS)
+
+    return () => clearInterval(id)
+  }, [show, target])
+
+  if (!show || target <= 0) {
+    return null
+  }
+
+  // Never flash the `-----` placeholder: before the first eased tick lands,
+  // show the target itself. The placeholder is reserved for formatTps callers
+  // that render instead of hiding.
+  const shown = display > 0 ? display : target
+
+  return <Text color={t.color.muted}>{` · ${formatTps(shown)}`}</Text>
 }
 
 export function StatusRule({
@@ -579,6 +649,7 @@ export function StatusRule({
   liveSessionCount,
   sessionStartedAt,
   speculativeCompressionState,
+  speculativeCompressionTokens,
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
@@ -615,6 +686,7 @@ export function StatusRule({
       speculativeCompressionState === 'active'
 
     const speculativeWaterColor = speculativePending ? SPECULATIVE_COMPACTION_WATER_COLOR : null
+
     const compressionCount =
       cols >= 80 && typeof usage.compressions === 'number' && usage.compressions > 0
         ? usage.compressions
@@ -631,7 +703,10 @@ export function StatusRule({
           </Box>
           <Text color={t.color.border}>{' │ '}</Text>
           {speculativePending ? (
-            <OptimizingCtx color={t.color.accent} />
+            <OptimizingCtx
+              color={t.color.muted}
+              tokens={speculativeCompressionTokens ?? null}
+            />
           ) : (
             <Text color={t.color.label} wrap="truncate-end">
               {modelText}
@@ -644,6 +719,10 @@ export function StatusRule({
               : `${fmtK(usage.total)}/—`}
             {compressionCount ? ` · cmp ${compressionCount}` : ''}
           </Text>
+          {/* Live token throughput, right after the context readout. The
+              meter owns its animation state, so the rest of the status rule
+              doesn't repaint while the number rolls. */}
+          <TpsMeter show={cols >= TPS_MIN_COLS} t={t} />
         </Box>
       </Box>
     )
@@ -720,6 +799,7 @@ export function StatusRule({
 
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+  const showTps = segs.tps && fits(SEP + stringWidth(` · ${formatTps(999.9)}`))
 
   // Idle clock — time since the last final agent response. Hidden while busy
   // (the FaceTicker's elapsed tail covers the live turn) and before the first
@@ -816,6 +896,7 @@ export function StatusRule({
               {ctxLabel}
             </Text>
           ) : null}
+          <TpsMeter show={showTps} t={t} />
         </Box>
         {showFocus ? (
           <Box flexDirection="row" flexShrink={0}>
@@ -1015,6 +1096,7 @@ interface StatusRuleProps {
   notice?: Notice | null
   sessionStartedAt?: null | number
   speculativeCompressionState: SpeculativeCompressionState
+  speculativeCompressionTokens?: null | number
   status: string
   statusColor: string
   t: Theme

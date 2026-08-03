@@ -1,14 +1,20 @@
+import { PassThrough } from 'stream'
+
+import { renderSync } from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
+import { $tpsTarget } from '../app/tpsStore.js'
 import {
   OPTIMIZING_DOTS_WIDTH,
-  StatusRule,
-  WATER_CELL_COUNT,
   optimizingLabel,
+  optimizingTokensLabel,
+  StatusRule,
+  TPS_MIN_COLS,
+  WATER_CELL_COUNT,
   waterFrame
 } from '../components/appChrome.js'
-import { DEFAULT_THEME } from '../theme.js'
+import { DEFAULT_THEME, type Theme } from '../theme.js'
 import type { Usage } from '../types.js'
 
 type ReactNodeLike = React.ReactNode
@@ -227,6 +233,91 @@ describe('StatusRule', () => {
     expect(widths.size).toBe(1)
     expect(optimizingLabel(3)).toBe('optimizing ctx...')
     expect(optimizingLabel(0)).toBe(`optimizing ctx${' '.repeat(OPTIMIZING_DOTS_WIDTH)}`)
+  })
+
+  it('shows the summary token estimate instead of dots once the backend surfaces it', async () => {
+    expect(optimizingTokensLabel(322_371)).toBe('optimizing ctx 322k')
+    expect(optimizingTokensLabel(65_000)).toBe('optimizing ctx 65k')
+
+    // OptimizingCtx owns a hook timer, so render through Ink's renderSync to
+    // execute it rather than calling StatusRule as a bare function.
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+
+    let output = ''
+
+    Object.assign(stdout, { columns: 100, isTTY: false, rows: 10 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      React.createElement(StatusRule, {
+        ...baseProps,
+        speculativeCompressionState: 'preparing',
+        speculativeCompressionTokens: 322_371
+      }),
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    // Let Ink flush its first frame to stdout before reading the captured
+    // output (same settle pattern as thinkingMoaReferenceVisibility.test.tsx).
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+
+    instance.unmount()
+    instance.cleanup()
+
+    expect(output).toContain('optimizing ctx 322k')
+  })
+
+  it('mounts the live TPS meter right after the context readout', () => {
+    $tpsTarget.set(45.2)
+
+    try {
+      const meter = findByName(StatusRule(baseProps), 'TpsMeter') as React.ReactElement<{
+        show: boolean
+        t: Theme
+      }> | null
+
+      expect(meter).not.toBeNull()
+      expect(meter?.props.show).toBe(true)
+      expect(meter?.props.t).toBe(DEFAULT_THEME)
+    } finally {
+      $tpsTarget.set(0)
+    }
+  })
+
+  it('drops the TPS meter before it can truncate narrow context', () => {
+    $tpsTarget.set(45.2)
+
+    try {
+      const meter = findByName(StatusRule({ ...baseProps, cols: TPS_MIN_COLS - 1 }), 'TpsMeter') as React.ReactElement<{
+        show: boolean
+      }> | null
+
+      expect(meter).not.toBeNull()
+      expect(meter?.props.show).toBe(false)
+    } finally {
+      $tpsTarget.set(0)
+    }
+  })
+
+  it('keeps the status tail quiet before the first streamed samples', () => {
+    $tpsTarget.set(0)
+
+    const element = StatusRule(baseProps)
+
+    expect(findByName(element, 'TpsMeter')).not.toBeNull()
+    expect(textContent(element)).not.toContain('t/s')
   })
 
 })

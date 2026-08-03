@@ -29,6 +29,7 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext, SpeculativeCompressionState } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
+import { feedTpsChars, resetTps } from './tpsStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -413,6 +414,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   let pendingThinkingStatus = ''
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
   let startupPromptSubmitted = false
+  // Session id of the last message.delta that fed the TPS meter (null = the
+  // first delta of the handler, or events without a session_id — tests).
+  let tpsLastSid: string | null = null
 
   // Request IDs of clarify prompts we've already flushed to the transcript as
   // an abandoned-prompt record, so the tool.complete and message.complete
@@ -792,6 +796,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // async compaction is still queued/preparing; terminal states clear.
         patchUiState(state => {
           const cur = state.speculativeCompressionState
+
           return cur === 'queued' || cur === 'preparing'
             ? state
             : { ...state, speculativeCompressionState: 'idle' }
@@ -807,7 +812,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (p.kind === 'speculative') {
           const state = speculativeStateOf(p.state)
-          patchUiState({ speculativeCompressionState: state })
+          patchUiState({
+            speculativeCompressionState: state,
+            speculativeCompressionTokens:
+              typeof p.tokens === 'number' && p.tokens > 0 ? p.tokens : null
+          })
           setStatus(p.text)
 
           if (turnController.lastStatusNote !== p.text) {
@@ -1370,11 +1379,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         )
 
         return
+      case 'message.delta': {
+        // Feed the status-bar TPS meter from the raw streamed text (the
+        // same `text` field recordMessageDelta consumes — never `rendered`,
+        // which carries ANSI markup). A delta for a different session means
+        // the active session switched, so the meter restarts clean.
+        const tpsSid = ev.session_id ?? null
 
-      case 'message.delta':
+        if (tpsSid !== tpsLastSid) {
+          tpsLastSid = tpsSid
+          resetTps()
+        }
+
+        feedTpsChars(String(ev.payload?.text ?? '').length)
         turnController.recordMessageDelta(ev.payload ?? {})
 
         return
+      }
+
       case 'message.interim': {
         const text = ev.payload?.text
 

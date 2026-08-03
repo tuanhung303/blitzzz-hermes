@@ -124,3 +124,53 @@ class TestConfigGetFastSessionScope:
         with patch.object(server, "_load_service_tier", return_value="priority"):
             resp = _get({"key": "fast"})
         assert resp["result"]["value"] == "fast"
+
+
+class TestPerModelFastDefaults:
+    def test_loader_prefers_luna_override(self) -> None:
+        cfg = {
+            "agent": {
+                "service_tier": "normal",
+                "service_tier_overrides": {"gpt-5.6-luna": "fast"},
+            }
+        }
+        with patch.object(server, "_load_cfg", return_value=cfg):
+            assert server._load_service_tier("gpt-5.6-luna") == "priority"
+            assert server._load_service_tier("gpt-5.6-sol") is None
+
+    def test_apply_default_adds_and_clears_only_fast_fields(self) -> None:
+        agent = _agent()
+        agent.request_overrides = {"keep": "value", "speed": "stale"}
+        with patch.object(server, "_load_service_tier", return_value="priority"), \
+                patch(
+                    "hermes_cli.models.resolve_fast_mode_overrides",
+                    return_value=FAST_OVERRIDES,
+                ):
+            server._apply_model_service_tier(agent, "gpt-5.6-luna")
+        assert agent.service_tier == "priority"
+        assert agent.request_overrides == {
+            "keep": "value",
+            "service_tier": "priority",
+        }
+
+        with patch.object(server, "_load_service_tier", return_value=None):
+            server._apply_model_service_tier(agent, "gpt-5.6-sol")
+        assert agent.service_tier is None
+        assert agent.request_overrides == {"keep": "value"}
+
+    def test_one_turn_snapshot_restores_fast_runtime(self) -> None:
+        agent = _agent("priority")
+        agent.api_key = "key"
+        agent.base_url = ""
+        agent.api_mode = "responses"
+        agent._primary_runtime = None
+        agent.request_overrides = {"service_tier": "priority"}
+        agent.switch_model = lambda **_kwargs: None
+        snapshot = server._snapshot_agent_model_runtime(agent)
+
+        agent.service_tier = None
+        agent.request_overrides = {}
+        server._restore_agent_model_runtime(agent, snapshot)
+
+        assert agent.service_tier == "priority"
+        assert agent.request_overrides == {"service_tier": "priority"}

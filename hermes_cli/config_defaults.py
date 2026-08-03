@@ -254,6 +254,10 @@ DEFAULT_CONFIG = {
         # matches a key in this dict.
         # Edit directly in config.yaml (no CLI support due to dots in keys).
         "reasoning_overrides": {},
+
+        # Per-model Priority Processing / fast-mode defaults. Matching uses the
+        # same spelling-tolerant model variants as reasoning_overrides.
+        "service_tier_overrides": {},
     },
 
     "terminal": {
