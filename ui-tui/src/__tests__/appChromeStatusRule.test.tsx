@@ -104,7 +104,7 @@ describe('waterFrame', () => {
 
 describe('StatusRule', () => {
   it('shows only water, model effort, and current/total context', () => {
-    const rendered = textContent(StatusRule(baseProps))
+    const rendered = textContent(StatusRule({ ...baseProps, usage: { ...baseProps.usage, compressions: 0 } }))
 
     expect(rendered).toContain('gpt 5.6 terra high')
     expect(rendered).toContain('65k/260k')
@@ -148,4 +148,30 @@ describe('StatusRule', () => {
 
     expect(rendered).toContain('65k/—')
   })
+  it('shows compression count alongside Pi context after a compaction', () => {
+    const rendered = textContent(StatusRule(baseProps))
+
+    expect(rendered).toContain('gpt 5.6 terra high')
+    expect(rendered).toContain('65k/260k')
+    expect(rendered).toContain('cmp 3')
+    expect(rendered).not.toContain('ready')
+    expect(rendered).not.toContain('~/repo')
+    expect(rendered).not.toContain('90% used')
+    expect(rendered).not.toContain('background')
+    expect(rendered).not.toContain('[')
+  })
+
+  it('hides the Pi compression count before the first compaction', () => {
+    const rendered = textContent(StatusRule({ ...baseProps, usage: { ...baseProps.usage, compressions: 0 } }))
+
+    expect(rendered).not.toContain('cmp ')
+  })
+
+  it('drops the Pi compression count before it can truncate narrow context', () => {
+    const rendered = textContent(StatusRule({ ...baseProps, cols: 79 }))
+
+    expect(rendered).toContain('65k/260k')
+    expect(rendered).not.toContain('cmp 3')
+  })
+
 })
