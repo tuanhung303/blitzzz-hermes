@@ -2,12 +2,7 @@ import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { $tpsTarget } from '../app/tpsStore.js'
-import {
-  StatusRule,
-  TPS_MIN_COLS,
-  WATER_CELL_COUNT,
-  waterFrame
-} from '../components/appChrome.js'
+import { StatusRule, TPS_MIN_COLS, WATER_CELL_COUNT, waterFrame } from '../components/appChrome.js'
 import { DEFAULT_THEME, type Theme } from '../theme.js'
 import type { Usage } from '../types.js'
 
@@ -208,12 +203,12 @@ describe('StatusRule', () => {
     expect(rendered).not.toContain('cmp 3')
   })
 
-
   it('flushes the water ticker to blood red while speculative compaction is pending', () => {
     // The optimizing-ctx label was removed; the water wave is the sole
     // pending-compaction indicator and turns blood red while it runs.
     for (const state of ['queued', 'preparing', 'active'] as const) {
       const element = StatusRule({ ...baseProps, speculativeCompressionState: state })
+
       const meter = findByName(element, 'WaterTicker') as React.ReactElement<{
         busy: boolean
         color: string
@@ -271,5 +266,4 @@ describe('StatusRule', () => {
     expect(findByName(element, 'TpsMeter')).not.toBeNull()
     expect(textContent(element)).not.toContain('t/s')
   })
-
 })

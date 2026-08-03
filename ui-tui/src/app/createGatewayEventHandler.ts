@@ -797,9 +797,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         patchUiState(state => {
           const cur = state.speculativeCompressionState
 
-          return cur === 'queued' || cur === 'preparing'
-            ? state
-            : { ...state, speculativeCompressionState: 'idle' }
+          return cur === 'queued' || cur === 'preparing' ? state : { ...state, speculativeCompressionState: 'idle' }
         })
 
         return

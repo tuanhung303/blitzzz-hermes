@@ -653,9 +653,7 @@ export function StatusRule({
     const speculativeWaterColor = speculativePending ? SPECULATIVE_COMPACTION_WATER_COLOR : null
 
     const compressionCount =
-      cols >= 80 && typeof usage.compressions === 'number' && usage.compressions > 0
-        ? usage.compressions
-        : 0
+      cols >= 80 && typeof usage.compressions === 'number' && usage.compressions > 0 ? usage.compressions : 0
 
     return (
       <Box height={1}>
