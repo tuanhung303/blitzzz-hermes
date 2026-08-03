@@ -788,7 +788,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'message.start':
         resetAgentsNudgeTurnState()
         turnController.startMessage()
-        patchUiState({ speculativeCompressionState: 'idle' })
+        // Keep the "optimizing ctx" indicator across a turn boundary while an
+        // async compaction is still queued/preparing; terminal states clear.
+        patchUiState(state => {
+          const cur = state.speculativeCompressionState
+          return cur === 'queued' || cur === 'preparing'
+            ? state
+            : { ...state, speculativeCompressionState: 'idle' }
+        })
 
         return
       case 'status.update': {

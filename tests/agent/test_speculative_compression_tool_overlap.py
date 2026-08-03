@@ -95,6 +95,33 @@ def test_hard_pressure_without_candidate_requests_synchronous_fallback(monkeypat
     assert manager.calls[-1][2]["wait_seconds"] == 0.01
 
 
+def test_ready_candidate_claimed_at_soft_preflight_without_wait(monkeypatch):
+    manager = Manager(object())
+    agent = _agent(manager)
+    agent.context_compressor.should_compress = lambda _tokens: False
+    agent._compress_context = lambda *args, **kwargs: (
+        setattr(agent, "_speculative_install_status", "installed")
+        or ([{"role": "user", "content": "summary"}], "sys")
+    )
+    monkeypatch.setattr(
+        "agent.speculative_compression.is_builtin_compression_eligible",
+        lambda **_kwargs: True,
+    )
+    messages = [{"role": "user", "content": "current"}]
+
+    result = _try_install_speculative_candidate(
+        agent,
+        messages,
+        "sys",
+        700,
+        "task-1",
+        allow_soft_ready=True,
+    )
+
+    assert result == ([{"role": "user", "content": "summary"}], "sys", True, False)
+    assert manager.calls[-1][2]["wait_seconds"] == 0.0
+
+
 def test_candidate_commit_rejection_falls_back_without_installing(monkeypatch):
     class RejectedCandidate:
         def is_expired(self, _max_age):

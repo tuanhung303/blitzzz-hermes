@@ -666,6 +666,49 @@ class TurnController {
     return { finalMessages, finalText, wasInterrupted }
   }
 
+  /**
+   * Settle the current turn's already-observed work into transcript
+   * messages WITHOUT ending the turn. The mid-turn-correction path
+   * (busy-input interrupt/redirect — `submitPrompt` while a turn is live)
+   * appends the new user bubble to the settled transcript BEFORE the
+   * redirected turn's ``message.complete`` flushes its buffered trail, so
+   * the old turn's tool lines would otherwise land BELOW the user message
+   * that chronologically followed them.
+   *
+   * This drains streaming text + the pending completed-tool shelf into a
+   * final segment, returns the accumulated settled segment list for the
+   * caller to append BEFORE the user bubble, and clears the finalized
+   * buffer so the redirected turn's ``message.complete`` only appends what
+   * happens AFTER the interjection. Genuinely active tools stay live —
+   * their start/progress keeps rendering and their completion lands below
+   * the bubble, which is where it belongs. Idle submits (empty buffer)
+   * settle nothing and return [].
+   */
+  checkpointBeforeUserBubble(): Msg[] {
+    if (this.interrupted) {
+      // interruptTurn() already flushed segments to the transcript.
+      return []
+    }
+
+    // Fold open reasoning + buffered streaming text + completed tool lines
+    // into sealed segments (flushStreamingSegment pushes a trail segment
+    // whenever there is streamed text or a pending tool shelf).
+    this.closeReasoningSegment()
+    this.flushStreamingSegment()
+
+    const settled = this.segmentMessages
+
+    if (settled.length === 0) {
+      return []
+    }
+
+    this.segmentMessages = []
+    this.interimBoundaryIndex = null
+    patchTurnState({ streamSegments: [], streamPendingTools: [] })
+
+    return settled
+  }
+
   recordMessageDelta({ text }: { rendered?: string; text?: string }) {
     if (this.interrupted || !text) {
       return
