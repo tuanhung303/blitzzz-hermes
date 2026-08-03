@@ -4925,10 +4925,14 @@ def _maybe_emit_live_usage(sid: str, session) -> None:
 
 def _get_usage(agent, session: dict | None = None) -> dict:
     if session is None:
-        for candidate in _sessions.values():
-            if candidate.get("agent") is agent:
-                session = candidate
-                break
+        # Fallback lookup for callers that only hold the agent. Guard with
+        # _sessions_lock: a concurrent session create/close can otherwise
+        # raise RuntimeError (dictionary changed size during iteration).
+        with _sessions_lock:
+            for candidate in _sessions.values():
+                if candidate.get("agent") is agent:
+                    session = candidate
+                    break
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
         "model": getattr(agent, "model", "") or "",
