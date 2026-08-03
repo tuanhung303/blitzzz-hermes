@@ -452,9 +452,9 @@ export const WATER_CELL_COUNT = 25
 // velocity, but exposes twice as many intermediate surface positions.
 const WATER_FRAME_MS = 60
 // Keep speculative work visible even under a monochrome skin. This transient
-// warm coral is scoped to the water ticker; it does not recolor general errors
+// blood-red is scoped to the water ticker; it does not recolor general errors
 // or warnings elsewhere in the UI.
-const SPECULATIVE_COMPACTION_WATER_COLOR = '#E98572'
+const SPECULATIVE_COMPACTION_WATER_COLOR = '#B22222'
 
 const BRAILLE_DOTS = [
   [0x01, 0x08],
@@ -542,40 +542,6 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
-// Constant-width label: the dot animation always reserves OPTIMIZING_DOTS_WIDTH
-// columns so the ` │ ctx` tail never shifts while `...` cycles to empty.
-export const OPTIMIZING_DOTS_WIDTH = 3
-
-export const optimizingLabel = (dots: number): string =>
-  `optimizing ctx${'.'.repeat(dots % 4).padEnd(OPTIMIZING_DOTS_WIDTH)}`
-
-// When the speculative summary estimate is known (backend surfaces it in the
-// status.update payload as `tokens`), show the summary model's working set
-// instead of the dots. A plain thousands separator keeps the label compact.
-export const optimizingTokensLabel = (tokens: number): string =>
-  `optimizing ctx ${Math.round(tokens / 1000)}k`
-
-function OptimizingCtx({ color, tokens }: { color: string; tokens: null | number }) {
-  const [dots, setDots] = useState(0)
-
-  useEffect(() => {
-    const timer = setInterval(() => setDots((count) => (count + 1) % 4), 450)
-
-    return () => clearInterval(timer)
-  }, [])
-
-  // Token count wins over the dots when present (and sits at a stable width);
-  // the dot tail only animates while no estimate has arrived yet.
-  const label =
-    tokens != null && tokens > 0 ? optimizingTokensLabel(tokens) : optimizingLabel(dots)
-
-  return (
-    <Text color={color} dim italic>
-      {label}
-    </Text>
-  )
-}
-
 // TPS meter cadence + ease. The eased roll toward the EMA target is what
 // makes the number "run evenly" (pi-agent-flow's value-flash idea, minus the
 // character scramble — a rolling numeric readout fits the status bar cleaner
@@ -649,7 +615,6 @@ export function StatusRule({
   liveSessionCount,
   sessionStartedAt,
   speculativeCompressionState,
-  speculativeCompressionTokens,
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
@@ -702,16 +667,9 @@ export function StatusRule({
             />
           </Box>
           <Text color={t.color.border}>{' │ '}</Text>
-          {speculativePending ? (
-            <OptimizingCtx
-              color={t.color.muted}
-              tokens={speculativeCompressionTokens ?? null}
-            />
-          ) : (
-            <Text color={t.color.label} wrap="truncate-end">
-              {modelText}
-            </Text>
-          )}
+          <Text color={t.color.label} wrap="truncate-end">
+            {modelText}
+          </Text>
           <Text color={t.color.border}>{' │ '}</Text>
           <Text color={t.color.muted} wrap="truncate-end">
             {usage.context_max
@@ -1096,7 +1054,6 @@ interface StatusRuleProps {
   notice?: Notice | null
   sessionStartedAt?: null | number
   speculativeCompressionState: SpeculativeCompressionState
-  speculativeCompressionTokens?: null | number
   status: string
   statusColor: string
   t: Theme

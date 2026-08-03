@@ -1,14 +1,8 @@
-import { PassThrough } from 'stream'
-
-import { renderSync } from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { $tpsTarget } from '../app/tpsStore.js'
 import {
-  OPTIMIZING_DOTS_WIDTH,
-  optimizingLabel,
-  optimizingTokensLabel,
   StatusRule,
   TPS_MIN_COLS,
   WATER_CELL_COUNT,
@@ -164,15 +158,15 @@ describe('StatusRule', () => {
     expect(busy?.props.busy).toBe(true)
   })
 
-  it('uses a warm-coral water wave only while speculative compaction is pending or active', () => {
+  it('uses a blood-red water wave only while speculative compaction is pending or active', () => {
     const queued = findWaterTicker(StatusRule({ ...baseProps, speculativeCompressionState: 'queued' }))
     const preparing = findWaterTicker(StatusRule({ ...baseProps, speculativeCompressionState: 'preparing' }))
     const active = findWaterTicker(StatusRule({ ...baseProps, speculativeCompressionState: 'active' }))
     const installed = findWaterTicker(StatusRule({ ...baseProps, speculativeCompressionState: 'installed' }))
 
-    expect(queued?.props.color).toBe('#E98572')
-    expect(preparing?.props.color).toBe('#E98572')
-    expect(active?.props.color).toBe('#E98572')
+    expect(queued?.props.color).toBe('#B22222')
+    expect(preparing?.props.color).toBe('#B22222')
+    expect(active?.props.color).toBe('#B22222')
     expect(installed?.props.color).toBe(DEFAULT_THEME.color.muted)
   })
 
@@ -215,68 +209,26 @@ describe('StatusRule', () => {
   })
 
 
-  it('shows the optimizing-ctx label while speculative compaction is pending', () => {
+  it('flushes the water ticker to blood red while speculative compaction is pending', () => {
+    // The optimizing-ctx label was removed; the water wave is the sole
+    // pending-compaction indicator and turns blood red while it runs.
     for (const state of ['queued', 'preparing', 'active'] as const) {
       const element = StatusRule({ ...baseProps, speculativeCompressionState: state })
-      expect(findByName(element, 'OptimizingCtx')).not.toBeNull()
+      const meter = findByName(element, 'WaterTicker') as React.ReactElement<{
+        busy: boolean
+        color: string
+      }> | null
+
+      expect(meter).not.toBeNull()
+      expect(meter?.props.color).toBe('#B22222')
     }
 
-    expect(findByName(StatusRule(baseProps), 'OptimizingCtx')).toBeNull()
-  })
+    const idleMeter = findByName(StatusRule(baseProps), 'WaterTicker') as React.ReactElement<{
+      busy: boolean
+      color: string
+    }> | null
 
-  it('pads the optimizing-ctx dots to a constant width so the status tail never shifts', () => {
-    // All 4 animation phases must occupy exactly OPTIMIZING_DOTS_WIDTH columns:
-    // `...` / `..` / `.` / `   ` — the unpadded form shrank the row every tick
-    // and dragged the ` │ ctx` tail (and everything after it) left/right.
-    const widths = new Set([0, 1, 2, 3].map(dots => optimizingLabel(dots).length))
-
-    expect(widths.size).toBe(1)
-    expect(optimizingLabel(3)).toBe('optimizing ctx...')
-    expect(optimizingLabel(0)).toBe(`optimizing ctx${' '.repeat(OPTIMIZING_DOTS_WIDTH)}`)
-  })
-
-  it('shows the summary token estimate instead of dots once the backend surfaces it', async () => {
-    expect(optimizingTokensLabel(322_371)).toBe('optimizing ctx 322k')
-    expect(optimizingTokensLabel(65_000)).toBe('optimizing ctx 65k')
-
-    // OptimizingCtx owns a hook timer, so render through Ink's renderSync to
-    // execute it rather than calling StatusRule as a bare function.
-    const stdout = new PassThrough()
-    const stdin = new PassThrough()
-    const stderr = new PassThrough()
-
-    let output = ''
-
-    Object.assign(stdout, { columns: 100, isTTY: false, rows: 10 })
-    Object.assign(stdin, { isTTY: false })
-    Object.assign(stderr, { isTTY: false })
-    stdout.on('data', (chunk: Buffer) => {
-      output += chunk.toString()
-    })
-
-    const instance = renderSync(
-      React.createElement(StatusRule, {
-        ...baseProps,
-        speculativeCompressionState: 'preparing',
-        speculativeCompressionTokens: 322_371
-      }),
-      {
-        patchConsole: false,
-        stderr: stderr as NodeJS.WriteStream,
-        stdin: stdin as NodeJS.ReadStream,
-        stdout: stdout as NodeJS.WriteStream
-      }
-    )
-
-    // Let Ink flush its first frame to stdout before reading the captured
-    // output (same settle pattern as thinkingMoaReferenceVisibility.test.tsx).
-    await new Promise(resolve => setImmediate(resolve))
-    await new Promise(resolve => setImmediate(resolve))
-
-    instance.unmount()
-    instance.cleanup()
-
-    expect(output).toContain('optimizing ctx 322k')
+    expect(idleMeter?.props.color).not.toBe('#B22222')
   })
 
   it('mounts the live TPS meter right after the context readout', () => {

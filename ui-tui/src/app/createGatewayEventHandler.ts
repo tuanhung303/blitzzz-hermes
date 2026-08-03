@@ -812,11 +812,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (p.kind === 'speculative') {
           const state = speculativeStateOf(p.state)
-          patchUiState({
-            speculativeCompressionState: state,
-            speculativeCompressionTokens:
-              typeof p.tokens === 'number' && p.tokens > 0 ? p.tokens : null
-          })
+          patchUiState({ speculativeCompressionState: state })
           setStatus(p.text)
 
           if (turnController.lastStatusNote !== p.text) {

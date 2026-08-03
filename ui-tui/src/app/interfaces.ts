@@ -342,7 +342,6 @@ export interface UiState {
   showReasoning: boolean
   indicatorStyle: IndicatorStyle
   speculativeCompressionState: SpeculativeCompressionState
-  speculativeCompressionTokens: null | number
   sid: null | string
   status: string
   statusBar: StatusBarMode
@@ -591,7 +590,6 @@ export interface AppLayoutStatusProps {
   sessionStartedAt: null | number
   showStickyPrompt: boolean
   speculativeCompressionState: SpeculativeCompressionState
-  speculativeCompressionTokens: null | number
   statusColor: string
   stickyPrompt: string
   turnStartedAt: null | number

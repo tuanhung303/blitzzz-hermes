@@ -1203,7 +1203,6 @@ export function useMainApp(gw: GatewayClient) {
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,
       speculativeCompressionState: ui.speculativeCompressionState,
-      speculativeCompressionTokens: ui.speculativeCompressionTokens,
       statusColor: statusColorOf(ui.status, ui.speculativeCompressionState, ui.theme.color),
       stickyPrompt,
       turnStartedAt: ui.sid ? turnStartedAt : null,
