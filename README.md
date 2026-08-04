@@ -9,10 +9,11 @@ with the patch-set applied on top after each `hermes update`.
 
 | Path | Purpose |
 |---|---|
-| `scripts/apply-fork-to-managed.sh` | Apply fork-local commits onto the managed runtime (`--check` dry-run). Run after every `hermes update`. |
-| `scripts/reapply-ui-patches.sh` | Inventory / cherry-pick the local topics onto any base (`--apply`). |
+| `scripts/apply-fork-to-managed.sh` | Apply the active non-spec snapshot onto the managed runtime (`--check` dry-run). It never replays the historical full fork. Run after every `hermes update`. |
+| `scripts/reapply-ui-patches.sh` | Inventory the active non-spec snapshot; historical cherry-picks are disabled. |
 | `scripts/upstream-sync.sh` | Old rebase pipeline for when this repo was a full fork (kept for reference). |
-| `patches/fork-local-v202683.patch` | Full fork-local diff (`upstream/main..HEAD`, no merges) as of v2026.8.3 sync — 73 commits: speculative compression, TUI statusline (TPS meter, blood-red water wave, live usage gauge), post-tool soft-claim fix, cleanup. |
+| `patches/fork-local-v202683.patch` | Archived full-fork export as of v2026.8.3. It is retained for historical recovery only and is never applied by the active workflow. |
+| `patches/managed-current-no-spec-20260804.patch` | Active consolidated snapshot of the managed tree after speculative removal; no speculative backend/config/UI wiring is present. |
 
 ## Workflow
 
@@ -21,10 +22,11 @@ hermes update    # managed -> upstream (wipe local surface)
 bash ~/Documents/GitHub/blitzzz-hermes/scripts/apply-fork-to-managed.sh
 ```
 
-The apply script refuses to run unless the managed checkout is at the same
-upstream base with a clean tree — half-updated runtimes get caught before
-anything breaks. After applying it re-syncs the managed venv and rebuilds the
-managed TUI dist.
+The apply script refuses a dirty managed checkout, then applies the consolidated
+snapshot only when its context still matches upstream. It never replays
+speculative-compression code, so upstream compression, persistent memory, and
+`micro_compact` remain fully upstream-owned. After applying it re-syncs the
+managed venv and rebuilds the managed TUI dist.
 
 If the managed runtime ever needs the surface back without a full patch
 apply: `~/.local/bin/hermes` is a wrapper preferring the managed runtime.

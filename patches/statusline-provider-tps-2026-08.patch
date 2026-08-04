@@ -1,7 +1,7 @@
 diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
 --- a/ui-tui/src/components/appChrome.tsx
 +++ b/ui-tui/src/components/appChrome.tsx
-@@ -442,15 +442,31 @@ const shortModelLabel = (model: string) =>
+@@ -442,15 +442,29 @@ const shortModelLabel = (model: string) =>
  const modelLabel = (model: string, effort?: string, fast?: boolean) =>
    [shortModelLabel(model), effortLabel(effort) || 'standard', fast ? 'fast' : ''].filter(Boolean).join(' ')
  
@@ -18,8 +18,7 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
  export const WATER_CELL_COUNT = 25
 +// All non-wave status metrics (separators, provider·model, bg count, context,
 +// TPS) share ONE fixed pale gray so the row stays legible on both light and
-+// dark terminals — theme-independent, like the blood-red speculative-water
-+// marker. Tune this single hex to taste.
++// dark terminals — theme-independent. Tune this single hex to taste.
 +const STATUS_METRIC_GRAY = '#AEB4BA'
  // 16 FPS is quick enough to read as fluid in Ink while staying well below a
  // terminal-wide 60 FPS repaint loop. The phase step keeps the original wave
@@ -30,9 +29,11 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
 +// frozen (WaterTicker only ticks while busy). Pure + clamped for tests.
 +export const waterTickMs = (tps: number): number =>
 +  Math.max(30, 130 - Math.min(Math.max(tps, 0), 100))
- // Keep speculative work visible even under a monochrome skin. This transient
- // blood-red is scoped to the water ticker; it does not recolor general errors
- // or warnings elsewhere in the UI.
+-// Keep speculative work visible even under a monochrome skin. This transient
+-// blood-red is scoped to the water ticker; it does not recolor general errors
+-// or warnings elsewhere in the UI.
++// Keep the water ticker on the ordinary status color; no local compression
++// state recolors the statusline.
 @@ -503,16 +519,21 @@ function WaterTicker({ busy, color }: { busy: boolean; color: string }) {
    // Do not reset the frame when a turn ends: pausing on the last frame makes
    // the status rule visually stable between turns while preserving its width.
@@ -133,7 +134,8 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
      return (
        <Box height={1}>
 @@ -681,24 +694,34 @@ export function StatusRule({
-               color={speculativeWaterColor ?? (busy ? statusColor : t.color.muted)}
+-              color={speculativeWaterColor ?? (busy ? statusColor : t.color.muted)}
++              color={busy ? statusColor : t.color.muted}
              />
            </Box>
 -          <Text color={t.color.border}>{' │ '}</Text>

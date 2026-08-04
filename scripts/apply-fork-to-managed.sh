@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# Apply the fork-local patch-set (speculative compression + TUI statusline) onto
-# the MANAGED runtime (~/.hermes/hermes-agent) after `hermes update`.
+# Apply the active non-spec fork snapshot onto the MANAGED runtime
+# (~/.hermes/hermes-agent) after `hermes update`.
 #
 # Workflow this enables:
 #   1. hermes update          # managed checkout -> upstream v2026.8.3 (clean)
-#   2. bash <this script>     # applies fork-local commits on top of it
+#   2. bash <this script>     # applies the active non-spec snapshot on top of it
 #   3. (script runs uv sync + ui-tui build)   # managed venv + TUI dist ready
 #
 # Design:
-#   - The patch source is THIS repo (blitzzz-hermes): everything NOT on
-#     upstream/main (git log upstream/main..HEAD, merge commits excluded) is
-#     fork-local by construction — speculative compression, TUI statusline,
-#     cleanup. No per-file list to maintain.
-#   - Guard: refuses to run unless the managed checkout is at the same
-#     upstream base (v2026.8.3) and has a clean tree. A half-updated managed
-#     (stale HEAD, dirty UI patches from a previous hand-apply) must be
-#     refreshed with `hermes update` first.
+#   - `full-fork-v202683` remains an immutable historical backup only. It is
+#     never formatted or replayed here: that history contains the retired
+#     speculative-compression implementation and its TUI/status hooks.
+#   - The active surface is the compatibility-checked snapshot under `patches/`.
+#     It is generated from the managed tree after speculative removal, so it
+#     preserves the remaining compression/memory/statusline/TPS/session-id
+#     changes without replaying stale historical commits.
+#   - Guard: the managed checkout must be clean. A half-updated managed runtime
+#     must be refreshed with `hermes update` first.
 #
 # Options:
 #   --check     dry run: print what would be applied, change nothing.
@@ -32,92 +33,55 @@ if [[ ! -d "$MANAGED/.git" ]]; then
   exit 1
 fi
 
-# ---- patch source: fork-local commits only -----------------------------------
+# ---- managed guard -------------------------------------------------------------
 cd "$FORK"
-git fetch upstream -q 2>/dev/null || true
-BASE_SHA="$(git rev-parse upstream/main 2>/dev/null || git rev-parse origin/main)"
-# This repo is a patch-set repo now: commit history lives on the
-# full-fork-v202683 backup branch. That branch is the tip of the merged
-# main, whose history contains BOTH pre-rebase and rebased copies of each
-# change. Resolve the source to the rebased-only chain: the second parent
-# of the 'Merge branch sync-v202683' commit. Verified 35 commits, 0 dupes.
-PATCH_SOURCE_REF="full-fork-v202683"
-SYNC_MERGE="$(git log --format='%H %s' --merges full-fork-v202683 \
-  | grep 'Merge branch .sync-v202683' | awk '{print $1}' | head -1)"
-if [[ -n "$SYNC_MERGE" && -n "$(git rev-parse -q --verify "${SYNC_MERGE}^2")" ]]; then
-  PATCH_SOURCE_REF="${SYNC_MERGE}^2"
-fi
-LOCAL_COMMITS="$(git log --oneline --no-merges "$BASE_SHA..$PATCH_SOURCE_REF" 2>/dev/null | wc -l | tr -d ' ')"
-if [[ "$LOCAL_COMMITS" == "0" ]]; then
-  echo "no fork-local commits ($BASE_SHA..$PATCH_SOURCE_REF) — nothing to apply" >&2
-  exit 0
-fi
-echo "fork-local commits to apply: $LOCAL_COMMITS from $PATCH_SOURCE_REF (base $BASE_SHA)"
-
-# ---- guard: managed must be at the upstream base with a clean tree ------------
 cd "$MANAGED"
 MANAGED_HEAD="$(git rev-parse --short HEAD)"
-if git merge-base --is-ancestor "$BASE_SHA" HEAD 2>/dev/null; then
-  echo "managed HEAD $MANAGED_HEAD already contains the fork base ✓"
-else
-  echo "managed HEAD $MANAGED_HEAD does NOT contain fork base $BASE_SHA."
-  echo "run 'hermes update' first so the managed checkout sits on upstream v2026.8.3." >&2
-  exit 1
-fi
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "managed tree is dirty — stash or discard first (hermes update usually resets it):" >&2
   git status --porcelain | head -5 >&2
   exit 1
 fi
+echo "managed HEAD $MANAGED_HEAD is clean; legacy fork history is inactive"
 
-# ---- generate + apply patch ---------------------------------------------------
-PATCH_FILE="$(mktemp /tmp/fork-to-managed-XXXX.patch)"
-trap 'rm -f "$PATCH_FILE"' EXIT
-git -C "$FORK" format-patch --no-merges --stdout "$BASE_SHA..$PATCH_SOURCE_REF" > "$PATCH_FILE"
-echo "patch: $PATCH_FILE ($(wc -l < "$PATCH_FILE" | tr -d ' ') lines)"
+ACTIVE_PATCHES=("$FORK"/patches/managed-current-no-spec-*.patch)
+if [[ ! -e "${ACTIVE_PATCHES[0]}" ]]; then
+  echo "no active consolidated patch found under $FORK/patches" >&2
+  exit 1
+fi
 
 if [[ "$MODE" == "--check" ]]; then
-  echo "--- would apply (check mode) ---"
-  git apply --stat "$PATCH_FILE" | tail -15
+  echo "--- active non-spec fork patch (check mode) ---"
+  for DELTA in "${ACTIVE_PATCHES[@]}"; do
+    if git apply --check --whitespace=nowarn "$DELTA" 2>/dev/null; then
+      echo "would apply: $(basename "$DELTA")"
+    else
+      echo "would skip: $(basename "$DELTA") (upstream drift / already applied)"
+    fi
+  done
   exit 0
 fi
 
-echo "--- applying ---"
-git apply --whitespace=nowarn "$PATCH_FILE" || {
-  echo "git apply failed — resolve manually: cd $MANAGED && git apply --whitespace=nowarn $PATCH_FILE" >&2
-  exit 2
-}
-echo "applied ✓ (working-tree changes; commit them or leave dirty as your managed convention)"
-
-# Optional follow-up deltas applied on top of the main patch (field fixes that
-# shipped after the 35-commit snapshot, e.g. statusline-fix-2026-08.patch,
-# tui-exit-session-fix-2026-08.patch, statusline-provider-tps-2026-08.patch).
-# ORDER MATTERS: statusline-provider-tps is diffed against the tree AFTER
-# tui-exit-session-fix (types.ts SessionInfo gains stored_session_id first,
-# then provider), so keep this exact sequence.
-for DELTA in \
-  "$FORK"/patches/statusline-fix-*.patch \
-  "$FORK"/patches/tui-exit-session-fix-*.patch \
-  "$FORK"/patches/statusline-provider-tps-*.patch
+# This consolidated patch is generated from the managed tree after the
+# speculative layer was removed. It carries the remaining compression/memory,
+# statusline, TPS, and session-id deltas without replaying historical commits.
+for DELTA in "${ACTIVE_PATCHES[@]}"
 do
   [[ -e "$DELTA" ]] || continue
   if git apply --check --whitespace=nowarn "$DELTA" 2>/dev/null; then
     git apply --whitespace=nowarn "$DELTA"
     echo "applied delta: $(basename "$DELTA") ✓"
   else
-    echo "delta $(basename "$DELTA") skipped (already present / conflicts — likely already applied)"
+    echo "delta $(basename "$DELTA") skipped (upstream drift / already applied)"
   fi
 done
 
-# Guard: the TUI exit-session-id wiring must be live after deltas; without it
-# Ctrl+C on a TUI pane exits silently with no resumable handle. The feature
-# ships in the fork chain (rebased copy 719a035e6) + the exit-fix delta
-# (rememberExitSessionId); if a future regen drops either, this warns instead
-# of failing silently.
+# Guard: the TUI exit-session-id wiring must be live after its compatible delta;
+# if upstream drift skips it, warn instead of claiming that Ctrl+C is resumable.
 if ! grep -q "rememberExitSessionId" ui-tui/src/app/useMainApp.ts; then
   echo "WARN: ui-tui/src/app/useMainApp.ts has no rememberExitSessionId wiring —" >&2
-  echo "      the fork chain no longer covers the TUI exit-session-id feature;" >&2
-  echo "      restore it (chain + patches/tui-exit-session-fix-2026-08.patch)" >&2
+  echo "      its compatibility delta did not match this upstream revision;" >&2
+  echo "      port patches/tui-exit-session-fix-2026-08.patch" >&2
   echo "      before relying on the Ctrl+C resume line." >&2
 fi
 git status --porcelain | awk '{print "  "$1" "$2}' | head -15
@@ -130,9 +94,9 @@ echo "--- ui-tui build (managed dist) ---"
 
 cat <<EOF
 
-Done. Managed runtime now carries the fork-local surface:
+Done. Managed runtime carries the active non-spec fork surface:
   managed:  $MANAGED
   version:  $("$MANAGED/venv/bin/hermes" --version 2>/dev/null | head -1 || echo '(re-check)')
 Run it with:  $MANAGED/venv/bin/hermes
-NOTE: the next \`hermes update\` wipes these patches — re-run this script after.
+# NOTE: the next "hermes update" wipes compatible deltas — re-run this script after.
 EOF

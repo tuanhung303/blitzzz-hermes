@@ -1,0 +1,218 @@
+diff --git a/agent/codex_runtime.py b/agent/codex_runtime.py
+index 5adf28078..469a5e120 100644
+--- a/agent/codex_runtime.py
++++ b/agent/codex_runtime.py
+@@ -992,6 +992,7 @@ def _consume_codex_event_stream(
+     model: str,
+     on_text_delta=None,
+     on_reasoning_delta=None,
++    on_throughput_delta=None,
+     on_commentary_message=None,
+     on_first_delta=None,
+     on_event=None,
+@@ -1027,6 +1028,10 @@ def _consume_codex_event_stream(
+     * ``on_reasoning_delta(str)`` — fires per ``response.reasoning.*.delta`` and
+       ``phase=analysis`` message deltas. When no dedicated commentary callback
+       is supplied, commentary also uses this legacy fallback.
++    * ``on_throughput_delta(str)`` — fires per visible
++      ``phase=commentary`` text delta without routing the text into the normal
++      assistant stream. This lets metrics observe commentary while preserving
++      the existing interim/reasoning display semantics.
+     * ``on_commentary_message(str)`` — fires once per completed
+       ``phase=commentary`` message, before any following tool item executes.
+     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
+@@ -1096,6 +1101,11 @@ def _consume_codex_event_stream(
+             delta_text = _event_field(event, "delta", "")
+             if delta_text and active_message_phase == "commentary":
+                 commentary_text_deltas.append(delta_text)
++                if on_throughput_delta is not None:
++                    try:
++                        on_throughput_delta(delta_text)
++                    except Exception:
++                        logger.debug("Codex stream on_throughput_delta raised", exc_info=True)
+                 # Preserve CLI/backward compatibility when no first-class
+                 # commentary consumer is installed.
+                 if on_commentary_message is None and on_reasoning_delta is not None:
+@@ -1266,6 +1276,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
+     def _on_reasoning_delta(text: str) -> None:
+         agent._fire_reasoning_delta(text)
+ 
++    def _on_throughput_delta(text: str) -> None:
++        agent._fire_throughput_delta(text)
++
+     def _on_commentary_message(text: str) -> None:
+         agent._fire_streamed_codex_commentary(text)
+ 
+@@ -1366,6 +1379,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
+                     model=api_kwargs.get("model"),
+                     on_text_delta=_on_text_delta,
+                     on_reasoning_delta=_on_reasoning_delta,
++                    on_throughput_delta=_on_throughput_delta,
+                     on_commentary_message=(
+                         _on_commentary_message
+                         if (
+
+diff --git a/run_agent.py b/run_agent.py
+index 598b00d0d..946179232 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -6221,6 +6221,20 @@ class AIAgent:
+             except Exception:
+                 pass
+ 
++    def _fire_throughput_delta(self, text: str) -> None:
++        """Notify the metric sink of visible text without changing the UI stream."""
++        if self._stream_writer_superseded():
++            self._note_dropped_stream_writer("_fire_throughput_delta")
++            return
++        if not isinstance(text, str) or not text:
++            return
++        cb = getattr(self, "_throughput_callback", None)
++        if cb is not None:
++            try:
++                cb(text)
++            except Exception:
++                pass
++
+     def _fire_tool_gen_started(self, tool_name: str) -> None:
+         """Notify display layer that the model is generating tool call arguments.
+ 
+
+diff --git a/tui_gateway/server.py b/tui_gateway/server.py
+index 651f73e98..96242b75f 100644
+--- a/tui_gateway/server.py
++++ b/tui_gateway/server.py
+@@ -9559,6 +9559,7 @@ def _run_prompt_submit(
+     def run():
+         approval_token = None
+         session_tokens = []
++        previous_throughput_callback = getattr(agent, "_throughput_callback", None)
+         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
+         secret_token = None
+         goal_followup = None  # set by the post-turn goal hook below
+@@ -9792,6 +9793,16 @@ def _run_prompt_submit(
+                     tts_queue.put(delta)
+                 _emit("message.delta", sid, payload)
+ 
++            # Codex Responses can stream user-visible commentary through the
++            # interim/reasoning path instead of message.delta. Keep throughput
++            # as a metric-only event so the TUI can measure it without appending
++            # the same commentary into the normal assistant buffer.
++            def _throughput(delta):
++                if isinstance(delta, str) and delta:
++                    _emit("message.throughput", sid, {"chars": len(delta)})
++
++            agent._throughput_callback = _throughput
++
+             # Surface interim assistant text (commentary emitted alongside
+             # tool calls, or the attempted final answer before a verify-on-stop
+             # nudge) so the desktop can seal it as its own segment instead of
+@@ -10263,6 +10274,7 @@ def _run_prompt_submit(
+             # Clear the per-turn interim callback so a stale closure from
+             # this turn can't fire during a later turn on the same agent.
+             agent.interim_assistant_callback = None
++            agent._throughput_callback = previous_throughput_callback
+             with session["history_lock"]:
+                 session["running"] = False
+                 session["last_active"] = time.time()
+
+diff --git a/ui-tui/src/gatewayTypes.ts b/ui-tui/src/gatewayTypes.ts
+index fb5cb035a..0eec3c8d1 100644
+--- a/ui-tui/src/gatewayTypes.ts
++++ b/ui-tui/src/gatewayTypes.ts
+@@ -720,6 +720,7 @@ export type GatewayEvent =
+   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.progress' }
+   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.complete' }
+   | { payload: { rendered?: string; text?: string }; session_id?: string; type: 'message.delta' }
++  | { payload: { chars: number }; session_id?: string; type: 'message.throughput' }
+   | {
+       payload: { already_streamed?: boolean; text: string }
+       session_id?: string
+
+diff --git a/ui-tui/src/app/createGatewayEventHandler.ts b/ui-tui/src/app/createGatewayEventHandler.ts
+index b9db20879..746912004 100644
+--- a/ui-tui/src/app/createGatewayEventHandler.ts
++++ b/ui-tui/src/app/createGatewayEventHandler.ts
+@@ -1393,6 +1393,25 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+         return
+       }
+ 
++      case 'message.throughput': {
++        // Codex commentary is intentionally kept out of message.delta so it
++        // does not alter transcript assembly, but it is still visible output
++        // and must contribute to the live TPS estimate.
++        const tpsSid = ev.session_id ?? null
++
++        if (tpsSid !== tpsLastSid) {
++          tpsLastSid = tpsSid
++          resetTps()
++        }
++
++        const chars = Number(ev.payload?.chars ?? 0)
++        if (Number.isFinite(chars) && chars > 0) {
++          feedTpsChars(chars)
++        }
++
++        return
++      }
++
+       case 'message.interim': {
+         const text = ev.payload?.text
+ 
+
+diff --git a/tests/run_agent/test_run_agent_codex_responses.py b/tests/run_agent/test_run_agent_codex_responses.py
+index 4b11b1fdb..6e07b2567 100644
+--- a/tests/run_agent/test_run_agent_codex_responses.py
++++ b/tests/run_agent/test_run_agent_codex_responses.py
+@@ -501,6 +501,7 @@ def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):
+     )
+     streamed = []
+     reasoning_streamed = []
++    throughput_streamed = []
+     commentary_messages = []
+ 
+     response = _consume_codex_event_stream(
+@@ -524,11 +525,13 @@ def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):
+         model="gpt-5-codex",
+         on_text_delta=streamed.append,
+         on_reasoning_delta=reasoning_streamed.append,
++        on_throughput_delta=throughput_streamed.append,
+         on_commentary_message=commentary_messages.append,
+     )
+ 
+     assert commentary_messages == ["I'll inspect the repo first."]
+     assert reasoning_streamed == ["Need inspect files privately."]
++    assert throughput_streamed == ["I'll inspect ", "the repo first."]
+     assert streamed == []
+     assert response.output == [commentary_item]
+ 
+
+diff --git a/ui-tui/src/__tests__/createGatewayEventHandler.test.ts b/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
+index b00a450b7..4217ef084 100644
+--- a/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
++++ b/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
+@@ -635,6 +635,24 @@ describe('createGatewayEventHandler', () => {
+     expect(assistant?.text).toBe('First. second.')
+   })
+ 
++  it('feeds TPS from Codex commentary throughput events without appending text', () => {
++    const appended: Msg[] = []
++    const onEvent = createGatewayEventHandler(buildCtx(appended))
++    const now = 1000
++    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
++
++    try {
++      onEvent({ payload: { chars: 40 }, session_id: 'luna', type: 'message.throughput' } as any)
++      clock.mockReturnValue(now + 300)
++      onEvent({ payload: { chars: 40 }, session_id: 'luna', type: 'message.throughput' } as any)
++
++      expect($tpsTarget.get()).toBeGreaterThan(0)
++      expect(appended).toHaveLength(0)
++    } finally {
++      clock.mockRestore()
++    }
++  })
++
+   it('anchors inline_diff as its own segment where the edit happened', () => {
+     const appended: Msg[] = []
+     const onEvent = createGatewayEventHandler(buildCtx(appended))

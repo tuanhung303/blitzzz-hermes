@@ -37,10 +37,8 @@ diff --git a/ui-tui/src/app/useMainApp.ts b/ui-tui/src/app/useMainApp.ts
 diff --git a/ui-tui/src/types.ts b/ui-tui/src/types.ts
 --- a/ui-tui/src/types.ts
 +++ b/ui-tui/src/types.ts
-@@ -180,6 +180,10 @@ export interface SessionInfo {
-   tui_startup_panel?: boolean
-   /** Speculative compression state: 'enabled' | 'installed' | null. */
-   speculative_compression?: 'enabled' | 'installed' | null
+@@ -180,4 +180,8 @@ export interface SessionInfo {
+  tui_startup_panel?: boolean
 +  /** Durable, resumable session id (session.create's stored_session_id). The
 +   *  UI's `sid` is the gateway-internal 8-hex key — never printable as a
 +   *  resume handle. */
