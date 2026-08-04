@@ -40,7 +40,7 @@ if [[ "$MODE" != "--apply" ]]; then
     "startup banner|banner/summary panel" \
     "submit order"; do
     echo "  [$topic]"
-    git log --oneline HEAD --grep="$topic" -i | head -3
+    git log --oneline --extended-regexp HEAD --grep="$topic" -i | head -3
   done
   echo
   echo "Fast restore from origin:  git fetch origin && git reset --hard origin/main"
@@ -54,7 +54,7 @@ fi
 pick_topic() {
   local pattern="$1"
   local sha
-  sha=$(git log --oneline --grep="$pattern" -i -1 --format='%H')
+  sha=$(git log --oneline --extended-regexp --grep="$pattern" -i -1 --format='%H')
   if [[ -z "$sha" ]]; then
     echo "  skip [$pattern]: no matching commit found"
     return 0
