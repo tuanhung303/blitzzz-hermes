@@ -1,0 +1,12 @@
+# runtime artifacts (kept on disk for the current TUI session; not tracked)
+.venv/
+venv/
+node_modules/
+ui-tui/dist/
+
+# python
+__pycache__/
+*.pyc
+
+# os
+.DS_Store
