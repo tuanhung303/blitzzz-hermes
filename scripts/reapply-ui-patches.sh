@@ -1,55 +1,89 @@
 #!/usr/bin/env bash
-# Reapply the local UI/statusline patch-set after an upstream reset-style sync.
+# Reapply the fork-local patch-set (speculative compression + TUI statusline)
+# after a clean reset to upstream, or as a sanity inventory after any sync.
 #
-# context: upstream-sync.sh rebases (safe — commits survive), but if you ever
-# reset main to upstream and re-apply the personal surface, this script is the
-# inventory of what to keep. The TUI statusline work (live usage gauge, TPS
-# meter, blood-red water wave, session-count tail) is fork-local; upstream does
-# not carry it.
+# context:
+#   - `hermes update` only touches the MANAGED runtime (~/.hermes/hermes-agent).
+#     It never touches this repo (blitzzz-hermes), so the local surface below
+#     survives updates untouched. Nothing to do for the normal update path.
+#   - If this repo is ever reset to a bare upstream (upstream-sync.sh rebase is
+#     SAFE and keeps all commits — only a manual reset loses them), the fast
+#     restore is:  git fetch origin && git reset --hard origin/main
+#     because origin/main already contains speculative + UI work.
+#   - `--apply` is the manual path for attaching the stack onto an arbitrary
+#     base (e.g. a fresh upstream main without the fork history). It
+#     cherry-picks the newest commit of each topic that is not already in HEAD.
 #
-# Usage:
-#   scripts/reapply-ui-patches.sh           # show inventory + current state
-#   scripts/reapply-ui-patches.sh --apply   # cherry-pick the UI commits onto HEAD
+# Topics (oldest-first) cherry-picked by --apply:
+#   speculative tool-wait preparation  (feat(compression): speculative tool-wait)
+#   speculative lifecycle statusline   (fix(compression): surface speculative | promote speculative)
+#   post-tool soft claim               (allow_soft_ready | soft pressure)
+#   TUI statusline (gauge/TPS/water)   (statusline | tps | water | usage gauge | Pi statusline)
+#   mid-turn submit ordering
+#   banner configurability             (startup banner)
+#   re-engineering cleanup
 #
-# The listed commits are the tail of this fork's main. Update the list when a
-# new UI commit lands (git log --oneline -- ui-tui/ tui_gateway/ | head).
+# AFTER cherry-pick:  uv sync && (cd ui-tui && npm run build) && restart TUI.
 
 set -euo pipefail
 
-APPLY="${1:-}"
+MODE="${1:-inventory}"
 
-# Oldest-first. These must be re-applied BEFORE the compression-core fixes
-# (speculative soft-claim etc.) if you take the whole stack.
-UI_COMMITS=(
-  # TUI statusline: live usage gauge (session.info push), status tokens
-  # "optimizing ctx" (retired), TPS meter, blood-red water wave
-  # (exact SHAs change; keep the topic markers below instead)
-)
-
-# Instead of hardcoding SHAs (they change on rebase), preserve by topic:
-#   git log --oneline --grep="statusline\|tps\|water\|optimizing ctx\|usage gauge" HEAD
-#
-# When upstream rewrites history under you, rebase once first; if that is
-# impossible (upstream force-push / reset), regenerate the patch-set BEFORE
-# resetting:
-#   git format-patch --stdout $(git merge-base HEAD upstream/main)..HEAD \
-#     -- ui-tui/ tui_gateway/ > /tmp/ui-patches.patch
-# then after reset:  git apply /tmp/ui-patches.patch
-
-if [[ "$APPLY" == "--apply" ]]; then
-  echo "refusing: no hardcoded SHA list; see header for the format-patch flow." >&2
-  exit 1
+# ----------------------------- inventory mode --------------------------------
+if [[ "$MODE" != "--apply" ]]; then
+  echo "=== Fork-local patch inventory (on HEAD) ==="
+  for topic in \
+    "speculative tool-wait compression" \
+    "speculative lifecycle statusline" \
+    "allow_soft_ready|soft pressure" \
+    "tps|water wave|usage gauge|statusline token" \
+    "startup banner" \
+    "mid-turn"; do
+    echo "  [$topic]"
+    git log --oneline HEAD --grep="$topic" -i | head -3
+  done
+  echo
+  echo "Fast restore from origin:  git fetch origin && git reset --hard origin/main"
+  echo "Manual re-apply:           $0 --apply"
+  exit 0
 fi
 
-echo "=== UI patch-set inventory (fork-local surface) ==="
-echo
-echo "Backend (tui_gateway/server.py + tests):"
-git log --oneline HEAD --grep="gauge\|statusline\|status update\|session.info" -i | head -6 || true
-echo
-echo "Frontend (ui-tui/src):"
-git log --oneline HEAD --grep="tps\|water\|optimizing ctx\|statusline\|mid-turn\|submit order" -i | head -10 || true
-echo
-echo "Non-UI compression-core fixes (do NOT drop these either):"
-git log --oneline HEAD --grep="speculative\|soft_ready\|soft pressure\|_sessions_lock" -i | head -8 || true
-echo
-echo "Rebase-based sync (upstream-sync.sh) keeps all of the above automatically."
+# ------------------------------ apply mode ------------------------------------
+# Find the NEWEST commit matching each topic; cherry-pick only if the change is
+# not already present (by grep on the full history below HEAD).
+pick_topic() {
+  local pattern="$1"
+  local sha
+  sha=$(git log --oneline --grep="$pattern" -i -1 --format='%H')
+  if [[ -z "$sha" ]]; then
+    echo "  skip [$pattern]: no matching commit found"
+    return 0
+  fi
+  local subject
+  subject=$(git log -1 --format='%s' "$sha")
+  if git log HEAD --format='%s' | grep -qiF "${subject%%:*}" 2>/dev/null; then
+    echo "  skip [$pattern]: already in HEAD ('${subject%%:*...}')"
+    return 0
+  fi
+  echo "  cherry-pick $sha ($subject)"
+  git cherry-pick --no-commit "$sha"
+}
+
+echo "=== Applying fork-local patches (in topic order) ==="
+pick_topic "feat(compression): speculative tool-wait"
+pick_topic "fix(compression): promote speculative"
+pick_topic "allow_soft_ready"
+pick_topic "usage gauge"
+pick_topic "statusline token estimate"
+pick_topic "tps meter|midTurnSubmitOrder|water wave"
+pick_topic "startup banner"
+pick_topic "drop speculative surface"
+
+cat <<'EOF'
+
+Applied as staged changes (no commits made). Next:
+  1. resolve any conflicts, then  git commit
+  2. uv sync
+  3. (cd ui-tui && npm run build)
+  4. restart TUI
+EOF
