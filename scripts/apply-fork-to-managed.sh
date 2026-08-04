@@ -36,12 +36,23 @@ fi
 cd "$FORK"
 git fetch upstream -q 2>/dev/null || true
 BASE_SHA="$(git rev-parse upstream/main 2>/dev/null || git rev-parse origin/main)"
-LOCAL_COMMITS="$(git log --oneline --no-merges "$BASE_SHA..HEAD" 2>/dev/null | wc -l | tr -d ' ')"
+# This repo is a patch-set repo now: commit history lives on the
+# full-fork-v202683 backup branch. That branch is the tip of the merged
+# main, whose history contains BOTH pre-rebase and rebased copies of each
+# change. Resolve the source to the rebased-only chain: the second parent
+# of the 'Merge branch sync-v202683' commit. Verified 35 commits, 0 dupes.
+PATCH_SOURCE_REF="full-fork-v202683"
+SYNC_MERGE="$(git log --format='%H %s' --merges full-fork-v202683 \
+  | grep 'Merge branch .sync-v202683' | awk '{print $1}' | head -1)"
+if [[ -n "$SYNC_MERGE" && -n "$(git rev-parse -q --verify "${SYNC_MERGE}^2")" ]]; then
+  PATCH_SOURCE_REF="${SYNC_MERGE}^2"
+fi
+LOCAL_COMMITS="$(git log --oneline --no-merges "$BASE_SHA..$PATCH_SOURCE_REF" 2>/dev/null | wc -l | tr -d ' ')"
 if [[ "$LOCAL_COMMITS" == "0" ]]; then
-  echo "no fork-local commits (upstream/main..HEAD) — nothing to apply" >&2
+  echo "no fork-local commits ($BASE_SHA..$PATCH_SOURCE_REF) — nothing to apply" >&2
   exit 0
 fi
-echo "fork-local commits to apply: $LOCAL_COMMITS (base $BASE_SHA)"
+echo "fork-local commits to apply: $LOCAL_COMMITS from $PATCH_SOURCE_REF (base $BASE_SHA)"
 
 # ---- guard: managed must be at the upstream base with a clean tree ------------
 cd "$MANAGED"
@@ -62,7 +73,7 @@ fi
 # ---- generate + apply patch ---------------------------------------------------
 PATCH_FILE="$(mktemp /tmp/fork-to-managed-XXXX.patch)"
 trap 'rm -f "$PATCH_FILE"' EXIT
-git -C "$FORK" format-patch --no-merges --stdout "$BASE_SHA..HEAD" > "$PATCH_FILE"
+git -C "$FORK" format-patch --no-merges --stdout "$BASE_SHA..$PATCH_SOURCE_REF" > "$PATCH_FILE"
 echo "patch: $PATCH_FILE ($(wc -l < "$PATCH_FILE" | tr -d ' ') lines)"
 
 if [[ "$MODE" == "--check" ]]; then
@@ -72,8 +83,8 @@ if [[ "$MODE" == "--check" ]]; then
 fi
 
 echo "--- applying ---"
-git apply --3way --whitespace=nowarn "$PATCH_FILE" || {
-  echo "git apply failed — resolve manually: cd $MANAGED && git apply --3way $PATCH_FILE" >&2
+git apply --whitespace=nowarn "$PATCH_FILE" || {
+  echo "git apply failed — resolve manually: cd $MANAGED && git apply --whitespace=nowarn $PATCH_FILE" >&2
   exit 2
 }
 echo "applied ✓ (working-tree changes; commit them or leave dirty as your managed convention)"
