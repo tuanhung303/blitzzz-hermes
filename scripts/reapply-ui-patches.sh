@@ -33,12 +33,12 @@ MODE="${1:-inventory}"
 if [[ "$MODE" != "--apply" ]]; then
   echo "=== Fork-local patch inventory (on HEAD) ==="
   for topic in \
-    "speculative tool-wait compression" \
-    "speculative lifecycle statusline" \
+    "speculative tool-wait" \
+    "surface speculative|promote speculative" \
     "allow_soft_ready|soft pressure" \
     "tps|water wave|usage gauge|statusline token" \
-    "startup banner" \
-    "mid-turn"; do
+    "startup banner|banner/summary panel" \
+    "submit order"; do
     echo "  [$topic]"
     git log --oneline HEAD --grep="$topic" -i | head -3
   done
