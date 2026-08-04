@@ -70,13 +70,13 @@ pick_topic() {
 }
 
 echo "=== Applying fork-local patches (in topic order) ==="
-pick_topic "feat(compression): speculative tool-wait"
-pick_topic "fix(compression): promote speculative"
-pick_topic "allow_soft_ready"
+pick_topic "speculative tool-wait"
+pick_topic "promote speculative|surface speculative"
+pick_topic "allow_soft_ready|soft pressure"
 pick_topic "usage gauge"
 pick_topic "statusline token estimate"
-pick_topic "tps meter|midTurnSubmitOrder|water wave"
-pick_topic "startup banner"
+pick_topic "tps meter|water wave|submit order"
+pick_topic "startup banner|banner/summary panel"
 pick_topic "drop speculative surface"
 
 cat <<'EOF'
