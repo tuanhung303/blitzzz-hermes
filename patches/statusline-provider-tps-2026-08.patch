@@ -1,0 +1,257 @@
+diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
+--- a/ui-tui/src/components/appChrome.tsx
++++ b/ui-tui/src/components/appChrome.tsx
+@@ -442,11 +442,22 @@ const shortModelLabel = (model: string) =>
+ const modelLabel = (model: string, effort?: string, fast?: boolean) =>
+   [shortModelLabel(model), effortLabel(effort) || 'standard', fast ? 'fast' : ''].filter(Boolean).join(' ')
+ 
++// Status-line middle label: `fireworks · deepseek v4 flash 0731 max`.
++// Provider is the raw session.info provider name; a dot with spaces separates
++// it from the model label (effort/fast suffixes unchanged).
++export const statusModelLabel = (provider: string | undefined, model: string, effort?: string, fast?: boolean): string =>
++  [provider ? `${provider.trim()} · ` : '', modelLabel(model, effort, fast)].join('')
++
+ // A full Braille water body is always exactly 25 terminal cells wide. Keeping
+ // it mounted while idle lets the final active frame freeze in place instead of
+ // replacing the indicator with a shorter "ready" label that shifts the model
+ // and context readout.
+ export const WATER_CELL_COUNT = 25
++// All non-wave status metrics (separators, provider·model, bg count, context,
++// TPS) share ONE fixed pale gray so the row stays legible on both light and
++// dark terminals — theme-independent, like the blood-red speculative-water
++// marker. Tune this single hex to taste.
++const STATUS_METRIC_GRAY = '#AEB4BA'
+ // 16 FPS is quick enough to read as fluid in Ink while staying well below a
+ // terminal-wide 60 FPS repaint loop. The phase step keeps the original wave
+ // velocity, but exposes twice as many intermediate surface positions.
+@@ -554,7 +565,7 @@ const TPS_EASE = 0.4
+ // duration breakpoint — the readout tail sheds before the context bar).
+ export const TPS_MIN_COLS = 76
+ 
+-function TpsMeter({ show, t }: { show: boolean; t: Theme }) {
++function TpsMeter({ show }: { show: boolean }) {
+   const target = useStore($tpsTarget)
+   const [display, setDisplay] = useState(0)
+   const displayRef = useRef(0)
+@@ -566,7 +577,6 @@ function TpsMeter({ show, t }: { show: boolean; t: Theme }) {
+ 
+       return
+     }
+-
+     const id = setInterval(() => {
+       const current = displayRef.current
+       const next = current + (target - current) * TPS_EASE
+@@ -584,16 +594,17 @@ function TpsMeter({ show, t }: { show: boolean; t: Theme }) {
+     return () => clearInterval(id)
+   }, [show, target])
+ 
+-  if (!show || target <= 0) {
++  if (!show) {
+     return null
+   }
+ 
+-  // Never flash the `-----` placeholder: before the first eased tick lands,
+-  // show the target itself. The placeholder is reserved for formatTps callers
+-  // that render instead of hiding.
++  // Idle (no live token data) keeps the corner slot stable with the formatTps
++  // placeholder instead of collapsing the right edge. Before the first eased
++  // tick lands, show the target itself — never flash the `-----` placeholder
++  // while a real reading is available.
+   const shown = display > 0 ? display : target
+ 
+-  return <Text color={t.color.muted}>{` · ${formatTps(shown)}`}</Text>
++  return <Text color={STATUS_METRIC_GRAY}>{` · ${formatTps(shown)}`}</Text>
+ }
+ 
+ export function StatusRule({
+@@ -605,6 +616,7 @@ export function StatusRule({
+   status,
+   statusColor,
+   model,
++  provider,
+   modelFast,
+   modelReasoningEffort,
+   indicatorStyle = 'kaomoji',
+@@ -635,7 +647,7 @@ export function StatusRule({
+       : ''
+ 
+   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
+-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
++  const modelText = statusModelLabel(provider, model, modelReasoningEffort, modelFast)
+ 
+   // The Pi status rule deliberately owns a fixed footprint: the water raster
+   // remains mounted in both states and is the only animated element. This keeps
+@@ -661,16 +673,9 @@ export function StatusRule({
+       ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+       : `${fmtK(usage.total)}/—`
+     const fixedContextSuffix = compressionCount ? ` · cmp ${compressionCount}` : ''
+-    const fixedContextWidth = stringWidth(`${fixedContextText}${fixedContextSuffix}`)
+-    const fixedSeparatorWidth = stringWidth(' │ ')
+-    const fixedTpsWidth = stringWidth(` · ${formatTps(999.9)}`)
+-    // The model is the only shrinkable segment.  Reserve the context tail
+-    // before deciding whether TPS fits; otherwise a long model label can push
+-    // the context/TPS text into the parent's overflow clip at cols >= 76.
+-    const showFixedTps =
+-      cols >= TPS_MIN_COLS &&
+-      WATER_CELL_COUNT + fixedSeparatorWidth * 2 + fixedContextWidth + fixedTpsWidth <
+-        Math.max(1, cols)
++    // TPS is pinned at the right edge under ALL widths: only the model
++    // segment yields (flexGrow/shrink), so the corner slot never collapses
++    // when a long model label or a tight column count would have dropped it.
+ 
+     return (
+       <Box height={1}>
+@@ -681,24 +686,34 @@ export function StatusRule({
+               color={speculativeWaterColor ?? (busy ? statusColor : t.color.muted)}
+             />
+           </Box>
+-          <Text color={t.color.border}>{' │ '}</Text>
++          <Text color={STATUS_METRIC_GRAY}>{' │ '}</Text>
+           <Box flexGrow={1} flexShrink={1} overflow="hidden">
+-            <Text color={t.color.label} wrap="truncate-end">
++            <Text color={STATUS_METRIC_GRAY} wrap="truncate-end">
+               {modelText}
+             </Text>
+           </Box>
+-          <Text color={t.color.border}>{' │ '}</Text>
++          {bgCount > 0 ? (
++            <>
++              <Text color={STATUS_METRIC_GRAY}>{' │ '}</Text>
++              <Box flexShrink={0}>
++                <Text color={STATUS_METRIC_GRAY}>{`${bgCount} bg`}</Text>
++              </Box>
++            </>
++          ) : null}
++          <Text color={STATUS_METRIC_GRAY}>{' │ '}</Text>
+           <Box flexShrink={0}>
+-            <Text color={t.color.muted} wrap="truncate-end">
++            <Text color={STATUS_METRIC_GRAY} wrap="truncate-end">
+               {fixedContextText}
+               {fixedContextSuffix}
+             </Text>
+           </Box>
+-          {/* Live token throughput, right after the context readout. The
+-              meter owns its animation state, so the rest of the status rule
+-              doesn't repaint while the number rolls. */}
++          {/* Live token throughput, pinned at the right corner. The meter
++              owns its animation state, so the rest of the status rule
++              doesn't repaint while the number rolls. When no live data it
++              keeps the slot with the formatTps placeholder instead of
++              collapsing the corner. */}
+           <Box flexShrink={0}>
+-            <TpsMeter show={showFixedTps} t={t} />
++            <TpsMeter show />
+           </Box>
+         </Box>
+       </Box>
+@@ -873,7 +888,7 @@ export function StatusRule({
+               {ctxLabel}
+             </Text>
+           ) : null}
+-          <TpsMeter show={showTps} t={t} />
++          <TpsMeter show={showTps} />
+         </Box>
+         {showFocus ? (
+           <Box flexDirection="row" flexShrink={0}>
+@@ -1067,6 +1082,7 @@ interface StatusRuleProps {
+   cols: number
+   cwdLabel: string
+   model: string
++  provider?: string
+   modelFast?: boolean
+   modelReasoningEffort?: string
+   indicatorStyle?: IndicatorStyle
+diff --git a/ui-tui/src/components/appLayout.tsx b/ui-tui/src/components/appLayout.tsx
+--- a/ui-tui/src/components/appLayout.tsx
++++ b/ui-tui/src/components/appLayout.tsx
+@@ -500,6 +500,7 @@ const StatusRulePane = memo(function StatusRulePane({
+         lastTurnEndedAt={status.lastTurnEndedAt}
+         liveSessionCount={ui.liveSessionCount}
+         model={ui.info?.model ?? ''}
++        provider={ui.info?.provider ?? ''}
+         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
+         modelReasoningEffort={ui.info?.reasoning_effort}
+         notice={ui.notice}
+diff --git a/ui-tui/src/types.ts b/ui-tui/src/types.ts
+--- a/ui-tui/src/types.ts
++++ b/ui-tui/src/types.ts
+@@ -184,6 +184,8 @@ export interface SessionInfo {
+    *  UI's `sid` is the gateway-internal 8-hex key — never printable as a
+    *  resume handle. */
+   stored_session_id?: string
++  /** Provider label (e.g. "fireworks") — status-line `provider · model` prefix. */
++  provider?: string
+   update_behind?: number | null
+   update_command?: string
+   usage?: Usage
+diff --git a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
+--- a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
++++ b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
+@@ -6,6 +6,7 @@ import {
+   StatusRule,
+   TPS_MIN_COLS,
+   WATER_CELL_COUNT,
++  statusModelLabel,
+   waterFrame
+ } from '../components/appChrome.js'
+ import { DEFAULT_THEME, type Theme } from '../theme.js'
+@@ -242,13 +243,12 @@ describe('StatusRule', () => {
+ 
+       expect(meter).not.toBeNull()
+       expect(meter?.props.show).toBe(true)
+-      expect(meter?.props.t).toBe(DEFAULT_THEME)
+     } finally {
+       $tpsTarget.set(0)
+     }
+   })
+ 
+-  it('drops the TPS meter before it can truncate narrow context', () => {
++  it('keeps the TPS meter pinned at narrow widths (model yields instead of dropping TPS)', () => {
+     $tpsTarget.set(45.2)
+ 
+     try {
+@@ -257,19 +257,39 @@ describe('StatusRule', () => {
+       }> | null
+ 
+       expect(meter).not.toBeNull()
+-      expect(meter?.props.show).toBe(false)
++      expect(meter?.props.show).toBe(true)
+     } finally {
+       $tpsTarget.set(0)
+     }
+   })
+ 
+-  it('keeps the status tail quiet before the first streamed samples', () => {
++  it('keeps the TPS meter mounted (slot stable) before the first streamed samples', () => {
+     $tpsTarget.set(0)
+ 
+-    const element = StatusRule(baseProps)
++    const meter = findByName(StatusRule(baseProps), 'TpsMeter') as React.ReactElement<{
++      show: boolean
++    }> | null
++
++    // The meter stays in the tree with show=true: the right corner does not
++    // collapse while idle (formatTps's placeholder is covered in tps.test.ts).
++    expect(meter).not.toBeNull()
++    expect(meter?.props.show).toBe(true)
++  })
++})
++
++describe('statusModelLabel', () => {
++  it('renders provider · model with spaces around the dot', () => {
++    expect(statusModelLabel('fireworks', 'deepseek v4 flash 0731', 'high', false)).toBe(
++      'fireworks · deepseek v4 flash 0731 high'
++    )
++  })
+ 
+-    expect(findByName(element, 'TpsMeter')).not.toBeNull()
+-    expect(textContent(element)).not.toContain('t/s')
++  it('omits the provider prefix when the session has none', () => {
++    expect(statusModelLabel('', 'deepseek v4 flash 0731')).toBe('deepseek v4 flash 0731 standard')
+   })
+ 
++  it('keeps the fast suffix and trims whitespace around the provider', () => {
++    // modelLabel semantics: 'gpt-5'→'gpt 5', undefined effort→'standard', fast kept.
++    expect(statusModelLabel(' fireworks ', 'gpt-5', undefined, true)).toBe('fireworks · gpt 5 standard fast')
++  })
+ })

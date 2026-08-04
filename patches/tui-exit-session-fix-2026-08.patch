@@ -1,0 +1,120 @@
+diff --git a/ui-tui/src/app/useMainApp.ts b/ui-tui/src/app/useMainApp.ts
+--- a/ui-tui/src/app/useMainApp.ts
++++ b/ui-tui/src/app/useMainApp.ts
+@@ -34,7 +34,7 @@ import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.j
+ import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+ import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
+ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+-import { emitSessionIdAtExit } from '../lib/sessionExit.js'
++import { rememberExitSessionId } from '../lib/sessionExit.js'
+ import { terminalParityHints } from '../lib/terminalParity.js'
+ import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
+ import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
+@@ -535,12 +535,17 @@ export function useMainApp(gw: GatewayClient) {
+   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
+ 
+   const die = useCallback(() => {
++    const ui = getUiState()
++    // The UI `sid` is the gateway's internal 8-hex session key; the resumable
++    // handle is the durable stored_session_id reported in session.info.
++    const exitSid = ui.info?.stored_session_id ?? ui.sid
+     gw.kill('app.die')
+     exit()
+-    // Emit the session id on user-initiated exits (Ctrl+C / Ctrl+D when idle,
+-    // /quit) so the conversation can be resumed afterwards. Must run AFTER
+-    // Ink's unmount so the line lands on the restored normal screen.
+-    emitSessionIdAtExit(getUiState().sid)
++    // Remember the resumable id; entry.tsx's process.on('exit') handler resets
++    // terminal modes (leaving the alternate screen) and then flushes this line,
++    // so it lands on the restored normal screen instead of being wiped by the
++    // \x1b[?1049l alt-screen exit that runs after this function returns.
++    rememberExitSessionId(exitSid)
+ 
+     // Ink's exit() calls unmount() which resets terminal modes but does NOT
+     // call process.exit().  Without an explicit exit the Node process stays
+
+
+diff --git a/ui-tui/src/types.ts b/ui-tui/src/types.ts
+--- a/ui-tui/src/types.ts
++++ b/ui-tui/src/types.ts
+@@ -180,6 +180,10 @@ export interface SessionInfo {
+   tui_startup_panel?: boolean
+   /** Speculative compression state: 'enabled' | 'installed' | null. */
+   speculative_compression?: 'enabled' | 'installed' | null
++  /** Durable, resumable session id (session.create's stored_session_id). The
++   *  UI's `sid` is the gateway-internal 8-hex key — never printable as a
++   *  resume handle. */
++  stored_session_id?: string
+   update_behind?: number | null
+   update_command?: string
+   usage?: Usage
+
+
+diff --git a/ui-tui/src/entry.tsx b/ui-tui/src/entry.tsx
+--- a/ui-tui/src/entry.tsx
++++ b/ui-tui/src/entry.tsx
+@@ -12,6 +12,7 @@ import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.
+ import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
+ import { openExternalUrl } from './lib/openExternalUrl.js'
+ import { recordParentLifecycle } from './lib/parentLog.js'
++import { flushExitSessionId } from './lib/sessionExit.js'
+ import { resetTerminalModes } from './lib/terminalModes.js'
+ 
+ if (!process.stdin.isTTY) {
+@@ -37,6 +38,10 @@ resetTerminalModes()
+ // graceful-exit cleanups is safe.
+ process.on('exit', () => {
+   resetTerminalModes()
++  // Print the user-initiated exit line (die() remembered the durable session
++  // id) only now — after the alt-screen exit / mode resets — so the line
++  // lands on the restored normal screen and survives the shell prompt.
++  flushExitSessionId()
+ })
+ 
+ // Desktop terminals benefit from a clean startup slate because the TUI usually
+
+
+diff --git a/ui-tui/src/lib/sessionExit.ts b/ui-tui/src/lib/sessionExit.ts
+--- a/ui-tui/src/lib/sessionExit.ts
++++ b/ui-tui/src/lib/sessionExit.ts
+@@ -2,9 +2,11 @@ import { writeSync } from 'node:fs'
+ 
+ /**
+  * Print the session id on user-initiated exits (Ctrl+C / Ctrl+D when idle,
+- * /quit) so the user can resume the conversation afterwards. Runs AFTER Ink's
+- * unmount (normal screen restored) and writes synchronously so the line can
+- * never be dropped by the process.exit() that follows.
++ * /quit) so the user can resume the conversation afterwards. Must run AFTER
++ * the terminal has fully left the alternate screen — the process.on('exit')
++ * handler in entry.tsx resets terminal modes (incl. \x1b[?1049l) and then
++ * flushes the remembered line, so it lands on the restored normal screen and
++ * survives the shell prompt that follows.
+  *
+  * `emit` is injectable for tests; the default writes to fd 1 (stdout).
+  */
+@@ -24,3 +26,25 @@ export const emitSessionIdAtExit = (
+     // stdout already gone (dashboard tab closed / EIO) — nothing to show
+   }
+ }
++
++/**
++ * die() computes the durable, resumable session id (stored_session_id from
++ * session.info — NOT the gateway-internal 8-hex sid) and remembers it here.
++ * entry.tsx flushes it from the process.on('exit') handler after resetting
++ * terminal modes, guaranteeing the line is the last thing on the terminal
++ * before the shell takes over.
++ */
++let pendingExitSid: null | string = null
++
++export const rememberExitSessionId = (sid: null | string): void => {
++  pendingExitSid = sid
++}
++
++export const flushExitSessionId = (emit?: (text: string) => void): void => {
++  if (pendingExitSid === null) {
++    return
++  }
++
++  emitSessionIdAtExit(pendingExitSid, emit)
++  pendingExitSid = null
++}

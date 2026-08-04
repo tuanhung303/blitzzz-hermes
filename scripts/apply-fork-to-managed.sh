@@ -90,8 +90,16 @@ git apply --whitespace=nowarn "$PATCH_FILE" || {
 echo "applied ✓ (working-tree changes; commit them or leave dirty as your managed convention)"
 
 # Optional follow-up deltas applied on top of the main patch (field fixes that
-# shipped after the 35-commit snapshot, e.g. statusline-fix-2026-08.patch).
-for DELTA in "$FORK"/patches/statusline-fix-*.patch; do
+# shipped after the 35-commit snapshot, e.g. statusline-fix-2026-08.patch,
+# tui-exit-session-fix-2026-08.patch, statusline-provider-tps-2026-08.patch).
+# ORDER MATTERS: statusline-provider-tps is diffed against the tree AFTER
+# tui-exit-session-fix (types.ts SessionInfo gains stored_session_id first,
+# then provider), so keep this exact sequence.
+for DELTA in \
+  "$FORK"/patches/statusline-fix-*.patch \
+  "$FORK"/patches/tui-exit-session-fix-*.patch \
+  "$FORK"/patches/statusline-provider-tps-*.patch
+do
   [[ -e "$DELTA" ]] || continue
   if git apply --check --whitespace=nowarn "$DELTA" 2>/dev/null; then
     git apply --whitespace=nowarn "$DELTA"
@@ -100,6 +108,18 @@ for DELTA in "$FORK"/patches/statusline-fix-*.patch; do
     echo "delta $(basename "$DELTA") skipped (already present / conflicts — likely already applied)"
   fi
 done
+
+# Guard: the TUI exit-session-id wiring must be live after deltas; without it
+# Ctrl+C on a TUI pane exits silently with no resumable handle. The feature
+# ships in the fork chain (rebased copy 719a035e6) + the exit-fix delta
+# (rememberExitSessionId); if a future regen drops either, this warns instead
+# of failing silently.
+if ! grep -q "rememberExitSessionId" ui-tui/src/app/useMainApp.ts; then
+  echo "WARN: ui-tui/src/app/useMainApp.ts has no rememberExitSessionId wiring —" >&2
+  echo "      the fork chain no longer covers the TUI exit-session-id feature;" >&2
+  echo "      restore it (chain + patches/tui-exit-session-fix-2026-08.patch)" >&2
+  echo "      before relying on the Ctrl+C resume line." >&2
+fi
 git status --porcelain | awk '{print "  "$1" "$2}' | head -15
 
 # ---- refresh managed venv + TUI dist ------------------------------------------
