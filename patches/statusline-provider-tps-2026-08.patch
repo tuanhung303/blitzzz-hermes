@@ -1,7 +1,7 @@
 diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
 --- a/ui-tui/src/components/appChrome.tsx
 +++ b/ui-tui/src/components/appChrome.tsx
-@@ -442,11 +442,22 @@ const shortModelLabel = (model: string) =>
+@@ -442,15 +442,31 @@ const shortModelLabel = (model: string) =>
  const modelLabel = (model: string, effort?: string, fast?: boolean) =>
    [shortModelLabel(model), effortLabel(effort) || 'standard', fast ? 'fast' : ''].filter(Boolean).join(' ')
  
@@ -24,7 +24,40 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
  // 16 FPS is quick enough to read as fluid in Ink while staying well below a
  // terminal-wide 60 FPS repaint loop. The phase step keeps the original wave
  // velocity, but exposes twice as many intermediate surface positions.
-@@ -554,7 +565,7 @@ const TPS_EASE = 0.4
+ const WATER_FRAME_MS = 60
++// Wave cadence scales with live token throughput: slow drift at low TPS, the
++// classic 60ms pace at ~70 t/s, full speed from ~100 t/s up. Idle stays
++// frozen (WaterTicker only ticks while busy). Pure + clamped for tests.
++export const waterTickMs = (tps: number): number =>
++  Math.max(30, 130 - Math.min(Math.max(tps, 0), 100))
+ // Keep speculative work visible even under a monochrome skin. This transient
+ // blood-red is scoped to the water ticker; it does not recolor general errors
+ // or warnings elsewhere in the UI.
+@@ -503,16 +519,21 @@ function WaterTicker({ busy, color }: { busy: boolean; color: string }) {
+   // Do not reset the frame when a turn ends: pausing on the last frame makes
+   // the status rule visually stable between turns while preserving its width.
+   const [frame, setFrame] = useState(0)
++  const tps = useStore($tpsTarget)
++  const tickMs = waterTickMs(tps)
+ 
+   useEffect(() => {
+     if (!busy) {
+       return
+     }
+ 
+-    const id = setInterval(() => setFrame(current => current + 1), WATER_FRAME_MS)
++    // The interval re-arms on every tps change (the target is EMA-smoothed,
++    // so cadence glides instead of snapping); the frame counter never resets,
++    // so a speed change keeps the wave phase continuous.
++    const id = setInterval(() => setFrame(current => current + 1), tickMs)
+ 
+     return () => clearInterval(id)
+-  }, [busy])
++  }, [busy, tickMs, tps])
+ 
+   return <Text color={color}>{waterFrame(frame)}</Text>
+ }
+@@ -554,7 +575,7 @@ const TPS_EASE = 0.4
  // duration breakpoint — the readout tail sheds before the context bar).
  export const TPS_MIN_COLS = 76
  
@@ -33,7 +66,7 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
    const target = useStore($tpsTarget)
    const [display, setDisplay] = useState(0)
    const displayRef = useRef(0)
-@@ -566,7 +577,6 @@ function TpsMeter({ show, t }: { show: boolean; t: Theme }) {
+@@ -566,7 +587,6 @@ function TpsMeter({ show, t }: { show: boolean; t: Theme }) {
  
        return
      }
@@ -41,7 +74,7 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
      const id = setInterval(() => {
        const current = displayRef.current
        const next = current + (target - current) * TPS_EASE
-@@ -584,16 +594,17 @@ function TpsMeter({ show, t }: { show: boolean; t: Theme }) {
+@@ -584,16 +604,15 @@ function TpsMeter({ show, t }: { show: boolean; t: Theme }) {
      return () => clearInterval(id)
    }, [show, target])
  
@@ -53,10 +86,8 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
 -  // Never flash the `-----` placeholder: before the first eased tick lands,
 -  // show the target itself. The placeholder is reserved for formatTps callers
 -  // that render instead of hiding.
-+  // Idle (no live token data) keeps the corner slot stable with the formatTps
-+  // placeholder instead of collapsing the right edge. Before the first eased
-+  // tick lands, show the target itself — never flash the `-----` placeholder
-+  // while a real reading is available.
++  // TPS stays in the shared light metric gray in every state — the wave is
++  // the only colored element of the strip.
    const shown = display > 0 ? display : target
  
 -  return <Text color={t.color.muted}>{` · ${formatTps(shown)}`}</Text>
@@ -64,7 +95,7 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
  }
  
  export function StatusRule({
-@@ -605,6 +616,7 @@ export function StatusRule({
+@@ -605,6 +624,7 @@ export function StatusRule({
    status,
    statusColor,
    model,
@@ -72,7 +103,7 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
    modelFast,
    modelReasoningEffort,
    indicatorStyle = 'kaomoji',
-@@ -635,7 +647,7 @@ export function StatusRule({
+@@ -635,7 +655,7 @@ export function StatusRule({
        : ''
  
    const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
@@ -81,7 +112,7 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
  
    // The Pi status rule deliberately owns a fixed footprint: the water raster
    // remains mounted in both states and is the only animated element. This keeps
-@@ -661,16 +673,9 @@ export function StatusRule({
+@@ -661,16 +681,9 @@ export function StatusRule({
        ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
        : `${fmtK(usage.total)}/—`
      const fixedContextSuffix = compressionCount ? ` · cmp ${compressionCount}` : ''
@@ -101,7 +132,7 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
  
      return (
        <Box height={1}>
-@@ -681,24 +686,34 @@ export function StatusRule({
+@@ -681,24 +694,34 @@ export function StatusRule({
                color={speculativeWaterColor ?? (busy ? statusColor : t.color.muted)}
              />
            </Box>
@@ -144,7 +175,7 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
            </Box>
          </Box>
        </Box>
-@@ -873,7 +888,7 @@ export function StatusRule({
+@@ -873,7 +896,7 @@ export function StatusRule({
                {ctxLabel}
              </Text>
            ) : null}
@@ -153,7 +184,7 @@ diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChro
          </Box>
          {showFocus ? (
            <Box flexDirection="row" flexShrink={0}>
-@@ -1067,6 +1082,7 @@ interface StatusRuleProps {
+@@ -1067,6 +1090,7 @@ interface StatusRuleProps {
    cols: number
    cwdLabel: string
    model: string
@@ -187,15 +218,18 @@ diff --git a/ui-tui/src/types.ts b/ui-tui/src/types.ts
 diff --git a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
 --- a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
 +++ b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
-@@ -6,6 +6,7 @@ import {
+@@ -6,7 +6,9 @@ import {
    StatusRule,
    TPS_MIN_COLS,
    WATER_CELL_COUNT,
+-  waterFrame
 +  statusModelLabel,
-   waterFrame
++  waterFrame,
++  waterTickMs
  } from '../components/appChrome.js'
  import { DEFAULT_THEME, type Theme } from '../theme.js'
-@@ -242,13 +243,12 @@ describe('StatusRule', () => {
+ import type { Usage } from '../types.js'
+@@ -242,13 +244,12 @@ describe('StatusRule', () => {
  
        expect(meter).not.toBeNull()
        expect(meter?.props.show).toBe(true)
@@ -210,7 +244,7 @@ diff --git a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx b/ui-tui/src/__te
      $tpsTarget.set(45.2)
  
      try {
-@@ -257,19 +257,39 @@ describe('StatusRule', () => {
+@@ -257,19 +258,53 @@ describe('StatusRule', () => {
        }> | null
  
        expect(meter).not.toBeNull()
@@ -253,5 +287,19 @@ diff --git a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx b/ui-tui/src/__te
 +  it('keeps the fast suffix and trims whitespace around the provider', () => {
 +    // modelLabel semantics: 'gpt-5'→'gpt 5', undefined effort→'standard', fast kept.
 +    expect(statusModelLabel(' fireworks ', 'gpt-5', undefined, true)).toBe('fireworks · gpt 5 standard fast')
++  })
++})
++
++describe('waterTickMs', () => {
++  it('scales the wave cadence with tps (60ms = the classic mid pace)', () => {
++    expect(waterTickMs(0)).toBe(130)
++    expect(waterTickMs(30)).toBe(100)
++    expect(waterTickMs(70)).toBe(60)
++    expect(waterTickMs(100)).toBe(30)
++  })
++
++  it('clamps at both ends', () => {
++    expect(waterTickMs(-5)).toBe(130)
++    expect(waterTickMs(500)).toBe(30)
 +  })
  })
