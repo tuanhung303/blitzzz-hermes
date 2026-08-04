@@ -88,6 +88,18 @@ git apply --whitespace=nowarn "$PATCH_FILE" || {
   exit 2
 }
 echo "applied ✓ (working-tree changes; commit them or leave dirty as your managed convention)"
+
+# Optional follow-up deltas applied on top of the main patch (field fixes that
+# shipped after the 35-commit snapshot, e.g. statusline-fix-2026-08.patch).
+for DELTA in "$FORK"/patches/statusline-fix-*.patch; do
+  [[ -e "$DELTA" ]] || continue
+  if git apply --check --whitespace=nowarn "$DELTA" 2>/dev/null; then
+    git apply --whitespace=nowarn "$DELTA"
+    echo "applied delta: $(basename "$DELTA") ✓"
+  else
+    echo "delta $(basename "$DELTA") skipped (already present / conflicts — likely already applied)"
+  fi
+done
 git status --porcelain | awk '{print "  "$1" "$2}' | head -15
 
 # ---- refresh managed venv + TUI dist ------------------------------------------

@@ -1,0 +1,90 @@
+From: blitzzz-hermes (worker statusline fix, 2026-08-04)
+Subject: statusline fix: session-attached usage + model-shrink TPS fit
+
+Applied by scripts/apply-fork-to-managed.sh AFTER patches/fork-local-v202683.patch.
+Two fixes reported from the field:
+  1. context_used/context_max vanished from session.info.status while a
+     session was reconciling/rotating its key: _session_usage_snapshot()
+     called _get_usage(agent) without the session, so the live-transcript
+     estimate fell back to a registry scan that missed the owning session.
+  2. TPS meter flickered on/off under long model labels: the fixed status
+     row used overflow=hidden but the model label was not shrinkable first,
+     so a long label pushed the context/TPS text into the clip even at
+     cols >= TPS_MIN_COLS. Model label is now the only shrinkable segment,
+     and TPS only renders when the context tail + TPS actually fit.
+
+diff --git a/tui_gateway/server.py b/tui_gateway/server.py
+--- a/tui_gateway/server.py
++++ b/tui_gateway/server.py
+@@ -5127,6 +5127,10 @@ def _session_usage_snapshot(session: dict | None) -> dict:
+     if (session or {}).get("_compute_host_active") and isinstance(mirror_usage, dict):
+         return dict(mirror_usage)
+     if agent is not None:
+-        return _get_usage(agent)
++        # Keep the owning session attached to the usage calculation.  Falling
++        # back to an identity scan of _sessions loses the live transcript during
++        # session-key rotation/reconciliation, which makes context_used vanish
++        # from the session.info payload even though the session still has it.
++        return _get_usage(agent, session)
+     return dict(mirror_usage) if isinstance(mirror_usage, dict) else {}
+
+diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
+--- a/ui-tui/src/components/appChrome.tsx
++++ b/ui-tui/src/components/appChrome.tsx
+@@ -657,6 +657,21 @@ function StatusRule(/* props */) {
+         ? usage.compressions
+         : 0
+ 
++    const fixedContextText = usage.context_max
++      ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
++      : `${fmtK(usage.total)}/—`
++    const fixedContextSuffix = compressionCount ? ` · cmp ${compressionCount}` : ''
++    const fixedContextWidth = stringWidth(`${fixedContextText}${fixedContextSuffix}`)
++    const fixedSeparatorWidth = stringWidth(' │ ')
++    const fixedTpsWidth = stringWidth(` · ${formatTps(999.9)}`)
++    // The model is the only shrinkable segment.  Reserve the context tail
++    // before deciding whether TPS fits; otherwise a long model label can push
++    // the context/TPS text into the parent's overflow clip at cols >= 76.
++    const showFixedTps =
++      cols >= TPS_MIN_COLS &&
++      WATER_CELL_COUNT + fixedSeparatorWidth * 2 + fixedContextWidth + fixedTpsWidth <
++        Math.max(1, cols)
++
+     return (
+       <Box height={1}>
+         <Box flexDirection="row" flexShrink={1} overflow="hidden" width={Math.max(1, cols)}>
+@@ -667,20 +682,24 @@ function StatusRule(/* props */) {
+             />
+           </Box>
+           <Text color={t.color.border}>{' │ '}</Text>
+-          <Text color={t.color.label} wrap="truncate-end">
+-            {modelText}
+-          </Text>
++          <Box flexGrow={1} flexShrink={1} overflow="hidden">
++            <Text color={t.color.label} wrap="truncate-end">
++              {modelText}
++            </Text>
++          </Box>
+           <Text color={t.color.border}>{' │ '}</Text>
+-          <Text color={t.color.muted} wrap="truncate-end">
+-            {usage.context_max
+-              ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+-              : `${fmtK(usage.total)}/—`}
+-            {compressionCount ? ` · cmp ${compressionCount}` : ''}
+-          </Text>
++          <Box flexShrink={0}>
++            <Text color={t.color.muted} wrap="truncate-end">
++              {fixedContextText}
++              {fixedContextSuffix}
++            </Text>
++          </Box>
+           {/* Live token throughput, right after the context readout. The
+               meter owns its animation state, so the rest of the status rule
+               doesn't repaint while the number rolls. */}
+-          <TpsMeter show={cols >= TPS_MIN_COLS} t={t} />
++          <Box flexShrink={0}>
++            <TpsMeter show={showFixedTps} t={t} />
++          </Box>
+         </Box>
+       </Box>
+     )
