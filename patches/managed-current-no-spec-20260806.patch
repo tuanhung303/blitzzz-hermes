@@ -4371,7 +4371,7 @@ index 1ff100f6d1..d7bcd9579a 100644
    statusColor: string
    t: Theme
 diff --git a/ui-tui/src/components/appLayout.tsx b/ui-tui/src/components/appLayout.tsx
-index 660fcb881d..8c798c17ca 100644
+index 660fcb881d..01de7fd057 100644
 --- a/ui-tui/src/components/appLayout.tsx
 +++ b/ui-tui/src/components/appLayout.tsx
 @@ -14,6 +14,7 @@ import { usePet } from '../app/usePet.js'
@@ -4415,15 +4415,11 @@ index 660fcb881d..8c798c17ca 100644
                ) : row.msg.kind === 'panel' && row.msg.panelData ? (
                  <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
                ) : (
-@@ -497,11 +500,13 @@ const StatusRulePane = memo(function StatusRulePane({
-         lastTurnEndedAt={status.lastTurnEndedAt}
-         liveSessionCount={ui.liveSessionCount}
-         model={ui.info?.model ?? ''}
-+        provider={ui.info?.provider ?? ''}
-         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
+@@ -501,7 +504,9 @@ const StatusRulePane = memo(function StatusRulePane({
          modelReasoningEffort={ui.info?.reasoning_effort}
          notice={ui.notice}
          onSessionCountClick={() => patchOverlayState({ sessions: true })}
++        provider={ui.info?.provider ?? ''}
          sessionStartedAt={status.sessionStartedAt}
 +
          status={ui.status}
