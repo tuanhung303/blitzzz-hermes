@@ -3931,7 +3931,7 @@ index 0000000000..f2c746261f
 +  $wavePulse.set($wavePulse.get() + 1)
 +}
 diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
-index 1ff100f6d1..52bab355ae 100644
+index 1ff100f6d1..4b6939366f 100644
 --- a/ui-tui/src/components/appChrome.tsx
 +++ b/ui-tui/src/components/appChrome.tsx
 @@ -6,7 +6,9 @@ import unicodeSpinners from 'unicode-animations'
@@ -3968,7 +3968,7 @@ index 1ff100f6d1..52bab355ae 100644
      compressions: w >= 80,
      voice: w >= 84,
      bg: w >= 88,
-@@ -436,7 +441,203 @@ const shortModelLabel = (model: string) =>
+@@ -436,7 +441,233 @@ const shortModelLabel = (model: string) =>
      .trim()
  
  const modelLabel = (model: string, effort?: string, fast?: boolean) =>
@@ -3994,6 +3994,13 @@ index 1ff100f6d1..52bab355ae 100644
 +// terminal-wide 60 FPS repaint loop. The splash clock steps at this fixed
 +// physics cadence regardless of token throughput.
 +const WATER_FRAME_MS = 60
++// End-of-turn coast-down: after the stream stops the wave keeps drifting a
++// few frames, each tick slower, then freezes — a momentum ease-out instead
++// of a hard stop. 6 frames at ×1.4 lands a ~1-2s wind-down depending on the
++// pace the wave had.
++const COAST_TICKS = 6
++const COAST_SLOWDOWN = 1.4
++const COAST_MAX_MS = 800
 +// Drift cadence scales with live token throughput: slow drift at low TPS, the
 +// classic 60ms pace at ~70 t/s, full speed from ~100 t/s up. The splash
 +// (tool-call pulse) runs on its own fixed cadence on top, so a tool call
@@ -4102,9 +4109,10 @@ index 1ff100f6d1..52bab355ae 100644
 +  // tool call layers one splash on top: the gateway bumps $wavePulse on every
 +  // `tool.start`, this component re-rolls random droplet peaks and restarts
 +  // the splash clock. The splash runs at a fixed physics cadence, so a tool
-+  // call pausing the token stream only slows the drift. Between turns the
-+  // drift freezes on its last frame; the status rule stays mounted so
-+  // model/context columns never shift.
++  // call pausing the token stream only slows the drift. When the turn ends
++  // the drift coasts: a few frames, each tick slower, then it freezes — a
++  // momentum ease-out instead of a hard stop. The status rule stays mounted
++  // so model/context columns never shift.
 +  const pulse = useStore($wavePulse)
 +  const tps = useStore($tpsTarget)
 +  const tickMs = waterTickMs(tps)
@@ -4112,12 +4120,16 @@ index 1ff100f6d1..52bab355ae 100644
 +  const [peaks, setPeaks] = useState<number[]>(() => freshWavePeaks())
 +  // -1 = no splash in flight.
 +  const [splashClock, setSplashClock] = useState(-1)
++  // 'drift' while busy, 'coast' while winding down after a turn, 'idle' once
++  // the wave has frozen.
++  const [phase, setPhase] = useState<'drift' | 'coast' | 'idle'>('idle')
++  const [coastTick, setCoastTick] = useState(0)
 +  const peaksRef = useRef(peaks)
 +  peaksRef.current = peaks
 +  const splashActive = splashClock >= 0
 +
-+  // New tool call → fresh splash droplets (tool calls only happen mid-turn,
-+  // so this also implies busy).
++  // New tool call → fresh splash droplets. (Tool calls only happen mid-turn,
++  // so this also implies busy.)
 +  useEffect(() => {
 +    if (pulse <= 0) {
 +      return
@@ -4127,29 +4139,47 @@ index 1ff100f6d1..52bab355ae 100644
 +    setSplashClock(0)
 +  }, [pulse])
 +
-+  // A turn ending mid-splash discards the airborne droplets: the wave
-+  // freezes on the drift frame, calm.
++  // Phase transitions: a busy turn drives, its end starts the coast-down
++  // (one-shot; the ticker flips to idle when the coast completes).
 +  useEffect(() => {
-+    if (!busy) {
-+      setSplashClock(-1)
++    if (busy) {
++      setPhase('drift')
++      setCoastTick(0)
++    } else if (phase === 'drift') {
++      setPhase('coast')
 +    }
-+  }, [busy])
++  }, [busy, phase])
 +
-+  // Drift ticker: TPS-driven cadence. Re-arms on every tps change (the
-+  // target is EMA-smoothed, so the pace glides); the frame counter never
-+  // resets, so a speed change keeps the wave phase continuous.
++  // Drift ticker: TPS-driven while busy; during coast the delay grows by
++  // COAST_SLOWDOWN per frame until the wave freezes. Re-arms on every tps
++  // change (the target is EMA-smoothed, so the pace glides); the frame
++  // counter never resets, so a pace change keeps the wave phase continuous.
 +  useEffect(() => {
-+    if (!busy) {
++    if (phase === 'idle') {
 +      return
 +    }
 +
-+    const id = setInterval(() => setDriftFrame(current => current + 1), tickMs)
++    const delay =
++      phase === 'coast' ? Math.min(COAST_MAX_MS, tickMs * Math.pow(COAST_SLOWDOWN, coastTick)) : tickMs
 +
-+    return () => clearInterval(id)
-+  }, [busy, tickMs])
++    const id = setTimeout(() => {
++      setDriftFrame(current => current + 1)
++
++      if (phase === 'coast') {
++        if (coastTick + 1 >= COAST_TICKS) {
++          setPhase('idle')
++        } else {
++          setCoastTick(current => current + 1)
++        }
++      }
++    }, delay)
++
++    return () => clearTimeout(id)
++  }, [phase, coastTick, tickMs])
 +
 +  // Splash ticker: fixed physics cadence, independent of token throughput.
-+  // Stops itself when every droplet has landed.
++  // Stops itself when every droplet has landed; a turn ending mid-splash
++  // lets it finish over the coasting drift.
 +  useEffect(() => {
 +    if (!splashActive) {
 +      return
@@ -4173,7 +4203,7 @@ index 1ff100f6d1..52bab355ae 100644
  
  export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
    const [active, setActive] = useState(false)
-@@ -463,6 +664,59 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
+@@ -463,6 +694,59 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
    return <Text color={color}>♥</Text>
  }
  
@@ -4233,7 +4263,7 @@ index 1ff100f6d1..52bab355ae 100644
  export function StatusRule({
    battery,
    focusView,
-@@ -472,6 +726,7 @@ export function StatusRule({
+@@ -472,6 +756,7 @@ export function StatusRule({
    status,
    statusColor,
    model,
@@ -4241,7 +4271,7 @@ index 1ff100f6d1..52bab355ae 100644
    modelFast,
    modelReasoningEffort,
    indicatorStyle = 'kaomoji',
-@@ -481,6 +736,7 @@ export function StatusRule({
+@@ -481,6 +766,7 @@ export function StatusRule({
    lastTurnEndedAt,
    liveSessionCount,
    sessionStartedAt,
@@ -4249,7 +4279,7 @@ index 1ff100f6d1..52bab355ae 100644
    turnStartedAt,
    voiceLabel,
    onSessionCountClick,
-@@ -501,10 +757,76 @@ export function StatusRule({
+@@ -501,10 +787,76 @@ export function StatusRule({
        : ''
  
    const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
@@ -4328,7 +4358,7 @@ index 1ff100f6d1..52bab355ae 100644
    const batteryText = showBattery ? batteryLabel(battery!) : ''
    const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
    const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
-@@ -561,7 +883,7 @@ export function StatusRule({
+@@ -561,7 +913,7 @@ export function StatusRule({
    }
  
    const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
@@ -4337,7 +4367,7 @@ index 1ff100f6d1..52bab355ae 100644
  
    // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
    // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
-@@ -569,11 +891,12 @@ export function StatusRule({
+@@ -569,11 +921,12 @@ export function StatusRule({
    // raises remaining nets a negative Δ (honest).
    const devCreditsText =
      typeof usage.dev_credits_spent_micros === 'number'
@@ -4351,7 +4381,7 @@ index 1ff100f6d1..52bab355ae 100644
  
    // Idle clock — time since the last final agent response. Hidden while busy
    // (the FaceTicker's elapsed tail covers the live turn) and before the first
-@@ -582,10 +905,10 @@ export function StatusRule({
+@@ -582,10 +935,10 @@ export function StatusRule({
      segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
  
    const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
@@ -4364,7 +4394,7 @@ index 1ff100f6d1..52bab355ae 100644
    const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
  
    // Parked-background reassurance: a top-level delegate_task runs in the
-@@ -670,6 +993,7 @@ export function StatusRule({
+@@ -670,6 +1023,7 @@ export function StatusRule({
                {ctxLabel}
              </Text>
            ) : null}
@@ -4372,7 +4402,7 @@ index 1ff100f6d1..52bab355ae 100644
          </Box>
          {showFocus ? (
            <Box flexDirection="row" flexShrink={0}>
-@@ -863,11 +1187,13 @@ interface StatusRuleProps {
+@@ -863,11 +1217,13 @@ interface StatusRuleProps {
    cols: number
    cwdLabel: string
    model: string
