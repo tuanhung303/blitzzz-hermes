@@ -3443,10 +3443,10 @@ index 0000000000..abb1f1485f
 +})
 diff --git a/ui-tui/src/__tests__/waterPulse.test.ts b/ui-tui/src/__tests__/waterPulse.test.ts
 new file mode 100644
-index 0000000000..c9a4a3063c
+index 0000000000..06af922f44
 --- /dev/null
 +++ b/ui-tui/src/__tests__/waterPulse.test.ts
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,124 @@
 +import { describe, expect, it } from 'vitest'
 +
 +import { $wavePulse, pulseWave } from '../app/wavePulseStore.js'
@@ -3508,8 +3508,18 @@ index 0000000000..c9a4a3063c
 +
 +    for (const peak of peaks) {
 +      expect(peak).toBeGreaterThanOrEqual(1)
-+      expect(peak).toBeLessThan(3.2)
++      expect(peak).toBeLessThan(3.6)
 +    }
++  })
++
++  it('splashes are high-contrast: short ripples AND tall towers in one burst', () => {
++    // Square-biased distribution: in 100 draws both ends must appear —
++    // droplets that barely break the surface and droplets that reach the
++    // top of the cell. (P(miss either end) < 1e-4.)
++    const peaks = freshWavePeaks(100)
++
++    expect(Math.min(...peaks)).toBeLessThan(1.5)
++    expect(Math.max(...peaks)).toBeGreaterThan(3)
 +  })
 +
 +  it('lifts the surface to the top rows at the midpoint of each drop flight', () => {
@@ -3921,7 +3931,7 @@ index 0000000000..f2c746261f
 +  $wavePulse.set($wavePulse.get() + 1)
 +}
 diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
-index 1ff100f6d1..d7bcd9579a 100644
+index 1ff100f6d1..52bab355ae 100644
 --- a/ui-tui/src/components/appChrome.tsx
 +++ b/ui-tui/src/components/appChrome.tsx
 @@ -6,7 +6,9 @@ import unicodeSpinners from 'unicode-animations'
@@ -3958,7 +3968,7 @@ index 1ff100f6d1..d7bcd9579a 100644
      compressions: w >= 80,
      voice: w >= 84,
      bg: w >= 88,
-@@ -436,7 +441,197 @@ const shortModelLabel = (model: string) =>
+@@ -436,7 +441,203 @@ const shortModelLabel = (model: string) =>
      .trim()
  
  const modelLabel = (model: string, effort?: string, fast?: boolean) =>
@@ -3992,13 +4002,16 @@ index 1ff100f6d1..d7bcd9579a 100644
 +export const waterTickMs = (tps: number): number =>
 +  Math.max(30, 130 - Math.min(Math.max(tps, 0), 100))
 +// Splash droplets launch from the drifting surface; each has a random peak
-+// height above it.
++// height above it. The range is wide and the distribution is square-biased
++// toward the short end, so a splash reads as high contrast: most droplets
++// barely break the surface (one row) while a few shoot to the top of the
++// cell — small ripples next to tall towers.
 +const PEAK_MIN = 1.0
-+const PEAK_MAX = 3.2
++const PEAK_MAX = 3.6
 +// Flight time under gravity scales with the square root of the peak height
 +// (T = 2√(2h/g)): a tall drop hangs and drifts down slowly while a short one
 +// lands almost immediately — the high-slow / low-fast fall that reads as
-+// physics. The tallest splash (~3.2 rows) lands at ~540ms, the shortest at
++// physics. The tallest splash (~3.6 rows) lands at ~570ms, the shortest at
 +// ~300ms.
 +const FLIGHT_K = 300
 +
@@ -4007,7 +4020,10 @@ index 1ff100f6d1..d7bcd9579a 100644
 +
 +/** Random droplet peaks, one per water pixel (2 per terminal cell). */
 +export const freshWavePeaks = (count: number = WATER_CELL_COUNT * 2): number[] =>
-+  Array.from({ length: count }, () => PEAK_MIN + Math.random() * (PEAK_MAX - PEAK_MIN))
++  Array.from(
++    { length: count },
++    () => PEAK_MIN + (PEAK_MAX - PEAK_MIN) * Math.pow(Math.random(), 2)
++  )
 +
 +/** When every droplet of this splash has landed (splash duration). */
 +export const maxPulseMs = (peaks: readonly number[]): number =>
@@ -4157,7 +4173,7 @@ index 1ff100f6d1..d7bcd9579a 100644
  
  export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
    const [active, setActive] = useState(false)
-@@ -463,6 +658,59 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
+@@ -463,6 +664,59 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
    return <Text color={color}>♥</Text>
  }
  
@@ -4217,7 +4233,7 @@ index 1ff100f6d1..d7bcd9579a 100644
  export function StatusRule({
    battery,
    focusView,
-@@ -472,6 +720,7 @@ export function StatusRule({
+@@ -472,6 +726,7 @@ export function StatusRule({
    status,
    statusColor,
    model,
@@ -4225,7 +4241,7 @@ index 1ff100f6d1..d7bcd9579a 100644
    modelFast,
    modelReasoningEffort,
    indicatorStyle = 'kaomoji',
-@@ -481,6 +730,7 @@ export function StatusRule({
+@@ -481,6 +736,7 @@ export function StatusRule({
    lastTurnEndedAt,
    liveSessionCount,
    sessionStartedAt,
@@ -4233,7 +4249,7 @@ index 1ff100f6d1..d7bcd9579a 100644
    turnStartedAt,
    voiceLabel,
    onSessionCountClick,
-@@ -501,10 +751,76 @@ export function StatusRule({
+@@ -501,10 +757,76 @@ export function StatusRule({
        : ''
  
    const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
@@ -4312,7 +4328,7 @@ index 1ff100f6d1..d7bcd9579a 100644
    const batteryText = showBattery ? batteryLabel(battery!) : ''
    const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
    const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
-@@ -561,7 +877,7 @@ export function StatusRule({
+@@ -561,7 +883,7 @@ export function StatusRule({
    }
  
    const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
@@ -4321,7 +4337,7 @@ index 1ff100f6d1..d7bcd9579a 100644
  
    // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
    // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
-@@ -569,11 +885,12 @@ export function StatusRule({
+@@ -569,11 +891,12 @@ export function StatusRule({
    // raises remaining nets a negative Δ (honest).
    const devCreditsText =
      typeof usage.dev_credits_spent_micros === 'number'
@@ -4335,7 +4351,7 @@ index 1ff100f6d1..d7bcd9579a 100644
  
    // Idle clock — time since the last final agent response. Hidden while busy
    // (the FaceTicker's elapsed tail covers the live turn) and before the first
-@@ -582,10 +899,10 @@ export function StatusRule({
+@@ -582,10 +905,10 @@ export function StatusRule({
      segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
  
    const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
@@ -4348,7 +4364,7 @@ index 1ff100f6d1..d7bcd9579a 100644
    const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
  
    // Parked-background reassurance: a top-level delegate_task runs in the
-@@ -670,6 +987,7 @@ export function StatusRule({
+@@ -670,6 +993,7 @@ export function StatusRule({
                {ctxLabel}
              </Text>
            ) : null}
@@ -4356,7 +4372,7 @@ index 1ff100f6d1..d7bcd9579a 100644
          </Box>
          {showFocus ? (
            <Box flexDirection="row" flexShrink={0}>
-@@ -863,11 +1181,13 @@ interface StatusRuleProps {
+@@ -863,11 +1187,13 @@ interface StatusRuleProps {
    cols: number
    cwdLabel: string
    model: string
