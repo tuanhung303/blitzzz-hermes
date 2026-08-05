@@ -1,5 +1,5 @@
 diff --git a/.gitignore b/.gitignore
-index 55a2ab8aad..c9c0d5587b 100644
+index 283c8a9164..cc452d4859 100644
 --- a/.gitignore
 +++ b/.gitignore
 @@ -37,6 +37,9 @@ test_durations.json
@@ -13,10 +13,10 @@ index 55a2ab8aad..c9c0d5587b 100644
  tests/quick_test_dataset.jsonl
  tests/sample_dataset.jsonl
 diff --git a/agent/agent_init.py b/agent/agent_init.py
-index 649d5338a9..ab07bb636d 100644
+index 6f89ed237d..e2045626a2 100644
 --- a/agent/agent_init.py
 +++ b/agent/agent_init.py
-@@ -1682,13 +1682,24 @@ def init_agent(
+@@ -1684,13 +1684,24 @@ def init_agent(
              agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
              if agent._memory_enabled or agent._user_profile_enabled:
                  from tools.memory_tool import MemoryStore
@@ -45,7 +45,7 @@ index 649d5338a9..ab07bb636d 100644
      
  
  
-@@ -1846,6 +1857,7 @@ def init_agent(
+@@ -1848,6 +1859,7 @@ def init_agent(
      _compression_cfg = _agent_cfg.get("compression", {})
      if not isinstance(_compression_cfg, dict):
          _compression_cfg = {}
@@ -53,7 +53,7 @@ index 649d5338a9..ab07bb636d 100644
      compression_threshold = float(_compression_cfg.get("threshold", 0.50))
      # Per-model/route compaction-threshold override. Codex gpt-5.4 / gpt-5.5
      # raise to 85% (the Codex backend caps both families at 272K, so the
-@@ -2502,6 +2514,7 @@ def init_agent(
+@@ -2504,6 +2516,7 @@ def init_agent(
              _bind_session_state(session_db=session_db, session_id=agent.session_id)
          except Exception:
              pass
@@ -62,10 +62,10 @@ index 649d5338a9..ab07bb636d 100644
      agent.compression_in_place = compression_in_place
      # Apply micro-compaction settings to the compressor (feature is opt-in)
 diff --git a/agent/agent_runtime_helpers.py b/agent/agent_runtime_helpers.py
-index 1bdce7a498..85c81b35a7 100644
+index 062549ed7f..d47d135426 100644
 --- a/agent/agent_runtime_helpers.py
 +++ b/agent/agent_runtime_helpers.py
-@@ -2686,6 +2686,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
+@@ -2693,6 +2693,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
              api_mode=agent.api_mode,
          )
  
@@ -74,10 +74,10 @@ index 1bdce7a498..85c81b35a7 100644
      # The new model may have a different reasoning_effort override. Re-read
      # config so the override takes effect immediately on /model switch —
 diff --git a/agent/chat_completion_helpers.py b/agent/chat_completion_helpers.py
-index 3b7d8b0361..485f2d4916 100644
+index 313e7cd865..382c0220ed 100644
 --- a/agent/chat_completion_helpers.py
 +++ b/agent/chat_completion_helpers.py
-@@ -2124,6 +2124,19 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+@@ -2158,6 +2158,19 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
              agent._copy_reasoning_content_for_api(msg, api_msg)
              for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                  api_msg.pop(internal_field, None)
@@ -925,10 +925,10 @@ index 59ae723d2b..03996b3de4 100644
          # last_head_role reads the assembled (post-strip) head; first_tail_role
          # reads the assembled (post-strip) tail_messages — a stripped stale
 diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
-index 8848b64df2..8a207f3795 100644
+index 0515a31331..e31514ac4f 100644
 --- a/agent/conversation_loop.py
 +++ b/agent/conversation_loop.py
-@@ -6332,6 +6332,7 @@ def run_conversation(
+@@ -6362,6 +6362,7 @@ def run_conversation(
                      except Exception:
                          pass
  
@@ -936,7 +936,7 @@ index 8848b64df2..8a207f3795 100644
                  agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
  
                  if getattr(agent, "_incremental_persistence_failed", False):
-@@ -6425,7 +6426,9 @@ def run_conversation(
+@@ -6455,7 +6456,9 @@ def run_conversation(
                  if (
                      agent.compression_enabled
                      and compression_attempts < max_compression_attempts
@@ -948,7 +948,7 @@ index 8848b64df2..8a207f3795 100644
                      compression_attempts += 1
                      # Compression is actually running (block cleared / was
 diff --git a/cli.py b/cli.py
-index aed3992922..a74465b9b4 100644
+index 9583383f61..ab7e2125a6 100644
 --- a/cli.py
 +++ b/cli.py
 @@ -43,7 +43,7 @@ from urllib.parse import unquote, urlparse
@@ -1020,7 +1020,7 @@ index aed3992922..a74465b9b4 100644
          elif canonical == "redraw":
              # Manual recovery for terminal buffer drift from multiplexer
              # tab switches, subshell ``clear``, SSH window restores, etc.
-@@ -10778,6 +10789,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
+@@ -10782,6 +10793,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
  
  
  
@@ -1077,10 +1077,10 @@ index 7b87e43505..0ee3f4c65d 100644
          """Profile-scoping wrapper around manual /compress.
  
 diff --git a/hermes_cli/commands.py b/hermes_cli/commands.py
-index 34280abc24..a6a8b9fcca 100644
+index a803ee925f..897b31411c 100644
 --- a/hermes_cli/commands.py
 +++ b/hermes_cli/commands.py
-@@ -182,6 +182,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
+@@ -186,6 +186,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
      # Configuration
      CommandDef("config", "Show current configuration", "Configuration",
                 cli_only=True),
@@ -1113,7 +1113,7 @@ index ff4629daca..b636966809 100644
      value = coerced_value
      # Normalize a scalar ``model`` key before writing sub-keys so that
 diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
-index 4ff18177a4..98c4038d6b 100644
+index 0ae798094a..3b42120343 100644
 --- a/hermes_cli/config_defaults.py
 +++ b/hermes_cli/config_defaults.py
 @@ -240,12 +240,24 @@ DEFAULT_CONFIG = {
@@ -1229,10 +1229,10 @@ index 96b9227322..01fab91de3 100644
      """Return True when running inside a Termux (Android) environment.
  
 diff --git a/run_agent.py b/run_agent.py
-index 60b3c1db0e..75b1fd8985 100644
+index 3e13c6493f..54f48e44b8 100644
 --- a/run_agent.py
 +++ b/run_agent.py
-@@ -686,6 +686,7 @@ class AIAgent:
+@@ -688,6 +688,7 @@ class AIAgent:
          if not engine:
              return
  
@@ -1240,7 +1240,7 @@ index 60b3c1db0e..75b1fd8985 100644
          if old_session_id and previous_messages is not None and hasattr(engine, "on_session_end"):
              try:
                  engine.on_session_end(old_session_id, previous_messages)
-@@ -6222,6 +6223,20 @@ class AIAgent:
+@@ -6398,6 +6399,20 @@ class AIAgent:
              except Exception:
                  pass
  
@@ -1261,7 +1261,7 @@ index 60b3c1db0e..75b1fd8985 100644
      def _fire_tool_gen_started(self, tool_name: str) -> None:
          """Notify display layer that the model is generating tool call arguments.
  
-@@ -7138,6 +7153,7 @@ class AIAgent:
+@@ -7314,6 +7329,7 @@ class AIAgent:
          force: bool = False,
          defer_context_engine_notification: bool = False,
          commit_fence=None,
@@ -1269,7 +1269,7 @@ index 60b3c1db0e..75b1fd8985 100644
      ) -> tuple:
          """Forwarder — see ``agent.conversation_compression.compress_context``.
  
-@@ -7204,7 +7220,7 @@ class AIAgent:
+@@ -7380,7 +7396,7 @@ class AIAgent:
                      defer_context_engine_notification=(
                          defer_context_engine_notification
                      ),
@@ -1820,10 +1820,10 @@ index a7e1d00cb9..b60b50720e 100644
          runner._cleanup_agent_resources.assert_not_called()
 -
 diff --git a/tests/run_agent/test_run_agent.py b/tests/run_agent/test_run_agent.py
-index 473e869faf..148773a88c 100644
+index a4d5fea1e7..2413b6986b 100644
 --- a/tests/run_agent/test_run_agent.py
 +++ b/tests/run_agent/test_run_agent.py
-@@ -2489,6 +2489,47 @@ class TestHandleMaxIterations:
+@@ -2585,6 +2585,47 @@ class TestHandleMaxIterations:
          assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
  
  
@@ -1871,7 +1871,7 @@ index 473e869faf..148773a88c 100644
  
  
  
-@@ -6046,4 +6087,3 @@ class TestMemoryContextSanitization:
+@@ -6146,4 +6187,3 @@ class TestMemoryContextSanitization:
          assert "memory-context" not in result.lower()
          assert "stale observation" not in result
          assert "how is the honcho working" in result
@@ -1945,7 +1945,7 @@ index 1d07d9d6b4..630fd5a301 100644
      """Tests for secure_parent_dir() — prevents chmod on / or top-level dirs."""
  
 diff --git a/tests/test_tui_gateway_server.py b/tests/test_tui_gateway_server.py
-index 18dae86177..c2a278594c 100644
+index e864f185ce..da5a8cb6a1 100644
 --- a/tests/test_tui_gateway_server.py
 +++ b/tests/test_tui_gateway_server.py
 @@ -119,6 +119,14 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
@@ -2092,7 +2092,88 @@ index 18dae86177..c2a278594c 100644
  
  
  def test_dispatch_rejects_non_object_request():
-@@ -13438,7 +13550,7 @@ def _setup_make_agent_mocks(monkeypatch, cfg):
+@@ -4398,7 +4510,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
+ 
+     try:
+         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+-        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++        monkeypatch.setattr(server, "_get_usage", lambda _a, _s=None: {})
+         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+         monkeypatch.setattr(server, "_emit", lambda *a: None)
+         monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+@@ -4739,7 +4851,7 @@ def _configure_immediate_prompt_run(
+     monkeypatch.setattr(server, "_set_session_context", lambda *_args, **_kwargs: [])
+     monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+     monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+-    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
++    monkeypatch.setattr(server, "_get_usage", lambda _agent, _s=None: {})
+     monkeypatch.setattr(
+         server, "_sync_session_key_after_compress", lambda *_args, **_kwargs: None
+     )
+@@ -8892,7 +9004,7 @@ def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
+     emits: list[tuple] = []
+     try:
+         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+-        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++        monkeypatch.setattr(server, "_get_usage", lambda _a, _s=None: {})
+         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+         monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+ 
+@@ -8997,7 +9109,7 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
+         emits: list[tuple] = []
+         try:
+             monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+-            monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++            monkeypatch.setattr(server, "_get_usage", lambda _a, _s=None: {})
+             monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+             monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+ 
+@@ -9064,7 +9176,7 @@ def test_prompt_submit_sanitizes_bracketed_paste_before_agent(monkeypatch):
+     server._sessions["sid"] = _session(agent=_Agent())
+     try:
+         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+-        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++        monkeypatch.setattr(server, "_get_usage", lambda _a, _s=None: {})
+         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+         monkeypatch.setattr(server, "_emit", lambda *a: None)
+         monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+@@ -9105,7 +9217,7 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
+     emits: list[tuple] = []
+     try:
+         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+-        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++        monkeypatch.setattr(server, "_get_usage", lambda _a, _s=None: {})
+         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+         monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+ 
+@@ -9168,7 +9280,7 @@ def test_prompt_submit_snapshots_history_after_pending_model_switch(monkeypatch)
+         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+         monkeypatch.setattr(server, "_apply_pending_model_switch", _apply_pending)
+         monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda *_a: None)
+-        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++        monkeypatch.setattr(server, "_get_usage", lambda _a, _s=None: {})
+         monkeypatch.setattr(server, "render_message", lambda *_a: "")
+         monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+ 
+@@ -9230,7 +9342,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
+ 
+     try:
+         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+-        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++        monkeypatch.setattr(server, "_get_usage", lambda _a, _s=None: {})
+         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+         monkeypatch.setattr(server, "_emit", lambda *a: None)
+         monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+@@ -9377,7 +9489,7 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
+ 
+     try:
+         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+-        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++        monkeypatch.setattr(server, "_get_usage", lambda _a, _s=None: {})
+         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+         monkeypatch.setattr(server, "_emit", lambda *a: None)
+         monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+@@ -13445,7 +13557,7 @@ def _setup_make_agent_mocks(monkeypatch, cfg):
      )
      monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "off")
      monkeypatch.setattr(server, "_load_reasoning_config", lambda model="": None)
@@ -2101,7 +2182,7 @@ index 18dae86177..c2a278594c 100644
      monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
      monkeypatch.setattr(server, "_get_db", lambda: None)
      monkeypatch.setattr(server, "_agent_cbs", lambda sid: {})
-@@ -15515,6 +15627,44 @@ def test_get_usage_clamps_post_compression_sentinel():
+@@ -15522,6 +15634,44 @@ def test_get_usage_clamps_post_compression_sentinel():
      assert "context_percent" not in usage
  
  
@@ -2146,6 +2227,24 @@ index 18dae86177..c2a278594c 100644
  # ---------------------------------------------------------------------------
  # Streaming TTS — per-turn pipeline + barge-in
  # ---------------------------------------------------------------------------
+@@ -16101,7 +16251,7 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
+     server._sessions["sid"] = _session(agent=_Agent())
+     try:
+         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+-        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++        monkeypatch.setattr(server, "_get_usage", lambda _a, _s=None: {})
+         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+         monkeypatch.setattr(server, "_emit", lambda *a: None)
+ 
+@@ -16166,7 +16316,7 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch):
+     server._sessions["sid_trim"] = session
+     try:
+         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+-        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++        monkeypatch.setattr(server, "_get_usage", lambda _a, _s=None: {})
+         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+         monkeypatch.setattr(server, "_emit", lambda *a: None)
+         monkeypatch.setattr(server, "set_hermes_home_override", lambda _home: object())
 diff --git a/tests/tui_gateway/test_fast_session_scope.py b/tests/tui_gateway/test_fast_session_scope.py
 index 8b3e230e75..2906395c5e 100644
 --- a/tests/tui_gateway/test_fast_session_scope.py
@@ -2218,10 +2317,10 @@ index 76e3533088..45ce0512cb 100644
  
  class TestSessionSourceFallback:
 diff --git a/tui_gateway/server.py b/tui_gateway/server.py
-index 9d5fd00ce7..1b6624d44f 100644
+index 87568f7f90..d530a78d1c 100644
 --- a/tui_gateway/server.py
 +++ b/tui_gateway/server.py
-@@ -488,13 +488,13 @@ def _notify_session_boundary(
+@@ -491,13 +491,13 @@ def _notify_session_boundary(
          if event_type == "on_session_finalize":
              finalize_session(
                  session_id=session_id,
@@ -2237,7 +2336,25 @@ index 9d5fd00ce7..1b6624d44f 100644
              )
      except Exception:
          pass
-@@ -3510,10 +3510,6 @@ def _resolve_session_source(explicit: str | None) -> str:
+@@ -1824,6 +1824,17 @@ def _status_update(sid: str, kind: str, text: str | None = None):
+ 
+         if COMPACTION_STATUS_MARKER in body:
+             out_kind = "compacting"
++    # Compaction completion: refresh the usage gauge immediately (context_used
++    # just dropped) and un-throttle the live usage stream so the next tool
++    # result re-arms it — the TUI must not sit on the pre-compaction numbers.
++    if kind == "compacted":
++        _live_usage_throttle_ts.pop(sid, None)
++        session = _sessions.get(sid)
++        if session is not None:
++            try:
++                _emit_session_info_for_session(sid, session)
++            except Exception:
++                logger.debug("_emit_session_info_for_session raised", exc_info=True)
+     _emit("status.update", sid, {"kind": out_kind, "text": body})
+ 
+ 
+@@ -3514,10 +3525,6 @@ def _resolve_session_source(explicit: str | None) -> str:
      return _resolve_session_platform()
  
  
@@ -2248,7 +2365,7 @@ index 9d5fd00ce7..1b6624d44f 100644
  def _config_model_target() -> tuple[str, str]:
      """(model, provider) currently selected by config.yaml — and ONLY config.
  
-@@ -3989,17 +3985,34 @@ def _load_reasoning_config(model: str = "") -> dict | None:
+@@ -3993,17 +4000,34 @@ def _load_reasoning_config(model: str = "") -> dict | None:
      return resolve_reasoning_config(_load_cfg(), model)
  
  
@@ -2294,7 +2411,7 @@ index 9d5fd00ce7..1b6624d44f 100644
  
  
  def _load_provider_routing() -> dict:
-@@ -4280,6 +4293,10 @@ def _snapshot_agent_model_runtime(agent) -> dict:
+@@ -4284,6 +4308,10 @@ def _snapshot_agent_model_runtime(agent) -> dict:
          "api_key": getattr(agent, "api_key", ""),
          "base_url": getattr(agent, "base_url", ""),
          "api_mode": getattr(agent, "api_mode", ""),
@@ -2305,7 +2422,7 @@ index 9d5fd00ce7..1b6624d44f 100644
          "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
      }
  
-@@ -4288,17 +4305,17 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
+@@ -4292,17 +4320,17 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
      """Restore an agent model runtime captured before a one-turn override."""
      if not snapshot or agent is None:
          return
@@ -2326,7 +2443,7 @@ index 9d5fd00ce7..1b6624d44f 100644
          agent.switch_model(
              new_model=snapshot.get("model", ""),
              new_provider=snapshot.get("provider", ""),
-@@ -4306,6 +4323,8 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
+@@ -4310,6 +4338,8 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
              base_url=snapshot.get("base_url", ""),
              api_mode=snapshot.get("api_mode", ""),
          )
@@ -2335,7 +2452,7 @@ index 9d5fd00ce7..1b6624d44f 100644
  
  
  def _apply_model_switch(
-@@ -4479,6 +4498,17 @@ def _apply_model_switch(
+@@ -4483,6 +4513,17 @@ def _apply_model_switch(
                  f"Model switch to {result.new_model} failed ({exc}); "
                  f"staying on {getattr(agent, 'model', current_model)}."
              ) from exc
@@ -2353,7 +2470,7 @@ index 9d5fd00ce7..1b6624d44f 100644
          _restart_slash_worker(sid, session)
          _persist_live_session_runtime(session)
          _persist_live_session_system_prompt(session)
-@@ -4727,6 +4757,7 @@ def _compress_session_history(
+@@ -4731,6 +4772,7 @@ def _compress_session_history(
  
      if partial and tail:
          compressed = rejoin_compressed_head_and_tail(compressed, tail)
@@ -2361,7 +2478,7 @@ index 9d5fd00ce7..1b6624d44f 100644
      with session["history_lock"]:
          if int(session.get("history_version", 0)) != history_version:
              # External mutation during compaction — drop the compressed
-@@ -4735,12 +4766,14 @@ def _compress_session_history(
+@@ -4739,12 +4781,14 @@ def _compress_session_history(
                  agent,
                  committed=False,
              )
@@ -2381,7 +2498,7 @@ index 9d5fd00ce7..1b6624d44f 100644
  
  
  def _sync_session_key_after_compress(
-@@ -4832,7 +4865,40 @@ def _sync_session_key_after_compress(
+@@ -4836,7 +4880,40 @@ def _sync_session_key_after_compress(
              pass
  
  
@@ -2423,7 +2540,7 @@ index 9d5fd00ce7..1b6624d44f 100644
      g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
      usage = {
          "model": getattr(agent, "model", "") or "",
-@@ -4853,24 +4919,86 @@ def _get_usage(agent) -> dict:
+@@ -4857,24 +4934,86 @@ def _get_usage(agent) -> dict:
          # impossible readings such as 1.9m/120k clamped to 100% (#50421).
          #
          # Per the issue, populate context_used/percent only from a *real*
@@ -2525,7 +2642,7 @@ index 9d5fd00ce7..1b6624d44f 100644
          usage["compressions"] = getattr(comp, "compression_count", 0) or 0
      # Live count of background/async subagents still running (delegate_task
      # batches + background single delegations). Mirrors the classic CLI status
-@@ -4967,7 +5095,11 @@ def _session_usage_snapshot(session: dict | None) -> dict:
+@@ -4971,7 +5110,11 @@ def _session_usage_snapshot(session: dict | None) -> dict:
      if (session or {}).get("_compute_host_active") and isinstance(mirror_usage, dict):
          return dict(mirror_usage)
      if agent is not None:
@@ -2538,7 +2655,7 @@ index 9d5fd00ce7..1b6624d44f 100644
      return dict(mirror_usage) if isinstance(mirror_usage, dict) else {}
  
  
-@@ -5011,7 +5143,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
+@@ -5015,7 +5158,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
      session_key = str(
          (session or {}).get("session_key") or getattr(agent, "session_id", "") or ""
      )
@@ -2548,7 +2665,15 @@ index 9d5fd00ce7..1b6624d44f 100644
      personality = (session or {}).get("personality", cfg_personality)
      reasoning_config = getattr(agent, "reasoning_config", None)
      reasoning_effort = ""
-@@ -5361,6 +5494,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
+@@ -5070,6 +5214,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
+         "branch": _git_branch_for_cwd(cwd),
+         "project": _project_info_for_cwd(cwd),
+         "personality": str(personality or ""),
++        "tui_startup_panel": bool(display_cfg.get("tui_startup_panel", True)),
+         "running": bool((session or {}).get("running")),
+         "title": _session_live_title(session or {}, session_key) if session_key else "",
+         "stored_session_id": session_key or "",
+@@ -5365,6 +5510,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
          pass
      if _tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name):
          _emit("tool.complete", sid, payload)
@@ -2558,7 +2683,7 @@ index 9d5fd00ce7..1b6624d44f 100644
  
  
  def _on_tool_progress(
-@@ -6414,6 +6550,14 @@ def _make_agent(
+@@ -6428,6 +6576,14 @@ def _make_agent(
                  raise RuntimeError("Auth fallback resolved without a model")
              model = resolution.selected_model
      _pr = _load_provider_routing()
@@ -2573,7 +2698,7 @@ index 9d5fd00ce7..1b6624d44f 100644
      return AIAgent(
          model=model,
          max_iterations=_cfg_max_turns(cfg, 500),
-@@ -6435,11 +6579,8 @@ def _make_agent(
+@@ -6449,11 +6605,8 @@ def _make_agent(
              if reasoning_config_override is not None
              else _load_reasoning_config(str(model or ""))
          ),
@@ -2587,7 +2712,7 @@ index 9d5fd00ce7..1b6624d44f 100644
          enabled_toolsets=_load_enabled_toolsets(),
          # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
          # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
-@@ -6450,7 +6591,7 @@ def _make_agent(
+@@ -6464,7 +6617,7 @@ def _make_agent(
          provider_sort=_pr.get("sort"),
          provider_require_parameters=_pr.get("require_parameters", False),
          provider_data_collection=_pr.get("data_collection"),
@@ -2596,7 +2721,7 @@ index 9d5fd00ce7..1b6624d44f 100644
          session_id=session_id or key,
          session_db=session_db if session_db is not None else _get_db(),
          ephemeral_system_prompt=system_prompt or None,
-@@ -9374,6 +9515,7 @@ def _run_prompt_submit(
+@@ -9388,6 +9541,7 @@ def _run_prompt_submit(
      def run():
          approval_token = None
          session_tokens = []
@@ -2604,7 +2729,7 @@ index 9d5fd00ce7..1b6624d44f 100644
          home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
          secret_token = None
          goal_followup = None  # set by the post-turn goal hook below
-@@ -9607,6 +9749,16 @@ def _run_prompt_submit(
+@@ -9621,6 +9775,16 @@ def _run_prompt_submit(
                      tts_queue.put(delta)
                  _emit("message.delta", sid, payload)
  
@@ -2621,7 +2746,7 @@ index 9d5fd00ce7..1b6624d44f 100644
              # Surface interim assistant text (commentary emitted alongside
              # tool calls, or the attempted final answer before a verify-on-stop
              # nudge) so the desktop can seal it as its own segment instead of
-@@ -10078,6 +10230,7 @@ def _run_prompt_submit(
+@@ -10092,6 +10256,7 @@ def _run_prompt_submit(
              # Clear the per-turn interim callback so a stale closure from
              # this turn can't fire during a later turn on the same agent.
              agent.interim_assistant_callback = None
@@ -2791,7 +2916,7 @@ index edf1859b2f..0000000000
 -  })
 -})
 diff --git a/ui-tui/src/__tests__/createGatewayEventHandler.test.ts b/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
-index 404aac3860..28ea6c679c 100644
+index 404aac3860..4f2c7402b9 100644
 --- a/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
 +++ b/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
 @@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -2810,7 +2935,7 @@ index 404aac3860..28ea6c679c 100644
      turnController.fullReset()
      patchUiState({ showReasoning: true })
    })
-@@ -605,6 +607,24 @@ describe('createGatewayEventHandler', () => {
+@@ -605,6 +607,62 @@ describe('createGatewayEventHandler', () => {
      expect(assistant?.text).toBe('First. second.')
    })
  
@@ -2832,10 +2957,48 @@ index 404aac3860..28ea6c679c 100644
 +    }
 +  })
 +
++  it('feeds TPS from reasoning deltas so long thinking phases keep the readout live', () => {
++    const appended: Msg[] = []
++    const onEvent = createGatewayEventHandler(buildCtx(appended))
++    const now = 1000
++    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
++
++    try {
++      onEvent({ payload: { text: 'reasoning…' }, session_id: 'deep', type: 'reasoning.delta' } as any)
++      clock.mockReturnValue(now + 300)
++      onEvent({ payload: { text: 'still thinking…' }, session_id: 'deep', type: 'reasoning.delta' } as any)
++
++      expect($tpsTarget.get()).toBeGreaterThan(0)
++      expect(appended).toHaveLength(0)
++    } finally {
++      clock.mockRestore()
++    }
++  })
++
++  it('resets TPS when reasoning deltas arrive for a different session', () => {
++    const appended: Msg[] = []
++    const onEvent = createGatewayEventHandler(buildCtx(appended))
++    const now = 1000
++    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
++
++    try {
++      onEvent({ payload: { text: 'aaa' }, session_id: 's1', type: 'reasoning.delta' } as any)
++      clock.mockReturnValue(now + 300)
++      onEvent({ payload: { text: 'bbb' }, session_id: 's1', type: 'reasoning.delta' } as any)
++      expect($tpsTarget.get()).toBeGreaterThan(0)
++
++      onEvent({ payload: { text: 'ccc' }, session_id: 's2', type: 'reasoning.delta' } as any)
++      expect($tpsTarget.get()).toBe(0)
++      expect(appended).toHaveLength(0)
++    } finally {
++      clock.mockRestore()
++    }
++  })
++
    it('anchors inline_diff as its own segment where the edit happened', () => {
      const appended: Msg[] = []
      const onEvent = createGatewayEventHandler(buildCtx(appended))
-@@ -1981,4 +2001,46 @@ describe('createGatewayEventHandler', () => {
+@@ -1981,4 +2039,46 @@ describe('createGatewayEventHandler', () => {
        expect(appended).toHaveLength(0)
      })
    })
@@ -3294,7 +3457,7 @@ index 0000000000..abb1f1485f
 +  })
 +})
 diff --git a/ui-tui/src/app/createGatewayEventHandler.ts b/ui-tui/src/app/createGatewayEventHandler.ts
-index 55a31f97dd..c941cdf428 100644
+index 55a31f97dd..75740ab46b 100644
 --- a/ui-tui/src/app/createGatewayEventHandler.ts
 +++ b/ui-tui/src/app/createGatewayEventHandler.ts
 @@ -29,6 +29,7 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
@@ -3339,7 +3502,26 @@ index 55a31f97dd..c941cdf428 100644
          if (p.kind === 'goal') {
            sys(p.text)
  
-@@ -1327,11 +1334,43 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+@@ -1045,6 +1052,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+ 
+       case 'reasoning.delta':
+         if (ev.payload?.text) {
++          // Reasoning/thinking tokens are streamed output too — feed the TPS
++          // meter so long analysis phases (deepseek max reasoning, codex
++          // analysis) keep the readout live instead of sitting on the idle
++          // placeholder. Metric-only; the transcript path is untouched.
++          const reasoningSid = ev.session_id ?? null
++
++          if (reasoningSid !== tpsLastSid) {
++            tpsLastSid = reasoningSid
++            resetTps()
++          }
++
++          feedTpsChars(String(ev.payload.text).length)
+           turnController.recordReasoningDelta(ev.payload.text, Boolean(ev.payload.verbose))
+         }
+ 
+@@ -1327,11 +1346,43 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
          )
  
          return
@@ -3384,7 +3566,7 @@ index 55a31f97dd..c941cdf428 100644
        case 'message.interim': {
          const text = ev.payload?.text
  
-@@ -1359,6 +1398,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+@@ -1359,6 +1410,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
  
          setStatus('ready')
  
@@ -3596,7 +3778,7 @@ index 283ebe5a11..2c77263148 100644
      // call process.exit().  Without an explicit exit the Node process stays
      // alive (stdin listener keeps the event loop open), so the process.on('exit')
 diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
-index 1ff100f6d1..6632cf709b 100644
+index 1ff100f6d1..40d20f452b 100644
 --- a/ui-tui/src/components/appChrome.tsx
 +++ b/ui-tui/src/components/appChrome.tsx
 @@ -6,6 +6,7 @@ import unicodeSpinners from 'unicode-animations'
@@ -3853,13 +4035,13 @@ index 1ff100f6d1..6632cf709b 100644
 +          {bgCount > 0 ? (
 +            <>
 +              <Text color={STATUS_METRIC_GRAY}>{' │ '}</Text>
-+              <Box flexShrink={0}>
-+                <Text color={STATUS_METRIC_GRAY}>{`${bgCount} bg`}</Text>
++              <Box flexShrink={1} overflow="hidden">
++                <Text color={STATUS_METRIC_GRAY} wrap="truncate-end">{`${bgCount} bg`}</Text>
 +              </Box>
 +            </>
 +          ) : null}
 +          <Text color={STATUS_METRIC_GRAY}>{' │ '}</Text>
-+          <Box flexShrink={0}>
++          <Box flexShrink={1} overflow="hidden">
 +            <Text color={STATUS_METRIC_GRAY} wrap="truncate-end">
 +              {fixedContextText}
 +              {fixedContextSuffix}
