@@ -13,7 +13,7 @@ with the patch-set applied on top after each `hermes update`.
 | `scripts/reapply-ui-patches.sh` | Inventory the active non-spec snapshot; historical cherry-picks are disabled. |
 | `scripts/upstream-sync.sh` | Old rebase pipeline for when this repo was a full fork (kept for reference). |
 | `patches/fork-local-v202683.patch` | Archived full-fork export as of v2026.8.3. It is retained for historical recovery only and is never applied by the active workflow. |
-| `patches/managed-current-no-spec-20260804.patch` | Active consolidated snapshot of the managed tree after speculative removal; no speculative backend/config/UI wiring is present. |
+| `patches/managed-current-no-spec-20260806.patch` | Active consolidated snapshot of the managed tree after speculative removal; no speculative backend/config/UI wiring is present. |
 
 ## Workflow
 

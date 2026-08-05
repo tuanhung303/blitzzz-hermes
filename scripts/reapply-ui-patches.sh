@@ -15,7 +15,7 @@
 #     scripts/apply-fork-to-managed.sh so the snapshot is compatibility-checked.
 #
 # Active compatibility snapshot:
-#   patches/managed-current-no-spec-20260804.patch
+#   patches/managed-current-no-spec-20260806.patch
 #
 # AFTER a compatible delta applies: uv sync && (cd ui-tui && npm run build) && restart TUI.
 

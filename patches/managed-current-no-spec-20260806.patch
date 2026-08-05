@@ -2755,32 +2755,17 @@ index 87568f7f90..d530a78d1c 100644
                  session["running"] = False
                  session["last_active"] = time.time()
 diff --git a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
-index b3c639846a..4fb740922e 100644
+index b3c639846a..ae36b321b2 100644
 --- a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
 +++ b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
-@@ -1,8 +1,17 @@
+@@ -1,5 +1,5 @@
  import React from 'react'
 -import { describe, expect, it, vi } from 'vitest'
--
--import { StatusRule } from '../components/appChrome.js'
--import { DEFAULT_THEME } from '../theme.js'
 +import { describe, expect, it } from 'vitest'
-+
-+import { $tpsTarget } from '../app/tpsStore.js'
-+import {
-+  StatusRule,
-+  TPS_MIN_COLS,
-+  WATER_CELL_COUNT,
-+  statusModelLabel,
-+  waterFrame,
-+  waterTickMs
-+} from '../components/appChrome.js'
-+import { DEFAULT_THEME, type Theme } from '../theme.js'
-+import type { Usage } from '../types.js'
  
- type ReactNodeLike = React.ReactNode
- 
-@@ -20,20 +29,20 @@ const textContent = (node: ReactNodeLike): string => {
+ import { StatusRule } from '../components/appChrome.js'
+ import { DEFAULT_THEME } from '../theme.js'
+@@ -20,20 +20,20 @@ const textContent = (node: ReactNodeLike): string => {
    }
  
    if (React.isValidElement(node)) {
@@ -2804,7 +2789,7 @@ index b3c639846a..4fb740922e 100644
  
        if (found) {
          return found
-@@ -47,23 +56,23 @@ const findClickableWithText = (node: ReactNodeLike, needle: string): React.React
+@@ -47,23 +47,23 @@ const findClickableWithText = (node: ReactNodeLike, needle: string): React.React
      return null
    }
  
@@ -3456,11 +3441,112 @@ index 0000000000..abb1f1485f
 +    expect(widths.size).toBe(1)
 +  })
 +})
+diff --git a/ui-tui/src/__tests__/waterPulse.test.ts b/ui-tui/src/__tests__/waterPulse.test.ts
+new file mode 100644
+index 0000000000..305dd296be
+--- /dev/null
++++ b/ui-tui/src/__tests__/waterPulse.test.ts
+@@ -0,0 +1,95 @@
++import { describe, expect, it } from 'vitest'
++
++import { $wavePulse, pulseWave } from '../app/wavePulseStore.js'
++import {
++  freshWavePeaks,
++  maxPulseMs,
++  pulseFlightMs,
++  WATER_CELL_COUNT,
++  waterPulseFrame
++} from '../components/appChrome.js'
++
++// Braille glyphs built from the same dot table as the renderer:
++//   U+28C0 = bottom row only (calm resting line, surface row 3)
++//   U+28FF = all eight dots (droplet at its peak, surface row 0)
++const REST_CELL = '\u28C0'
++const FULL_CELL = '\u28FF'
++
++const restFrame = (): string => REST_CELL.repeat(WATER_CELL_COUNT)
++
++describe('water pulse physics', () => {
++  it('flight time grows with the square root of the peak height', () => {
++    expect(pulseFlightMs(1)).toBe(300)
++    expect(pulseFlightMs(4)).toBe(600)
++    expect(pulseFlightMs(0)).toBe(0)
++    expect(pulseFlightMs(-2)).toBe(0)
++  })
++
++  it('a pulse lasts as long as its tallest droplet', () => {
++    expect(maxPulseMs([1, 4])).toBe(600)
++    expect(maxPulseMs([])).toBe(0)
++  })
++
++  it('fresh peaks stay inside the splash range and cover every pixel', () => {
++    const peaks = freshWavePeaks()
++
++    expect(peaks).toHaveLength(WATER_CELL_COUNT * 2)
++
++    for (const peak of peaks) {
++      expect(peak).toBeGreaterThanOrEqual(1)
++      expect(peak).toBeLessThan(3.2)
++    }
++  })
++
++  it('rests on the calm line before a pulse and after every drop lands', () => {
++    const peaks = [3.2, 1, 0, 0, 0, 0]
++
++    expect(waterPulseFrame(peaks, 0)).toBe(restFrame())
++    expect(waterPulseFrame(peaks, maxPulseMs(peaks))).toBe(restFrame())
++    expect(waterPulseFrame(peaks, maxPulseMs(peaks) + 1000)).toBe(restFrame())
++  })
++
++  it('reaches full height at the midpoint of each drop flight', () => {
++    const peaks = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 3.2)
++    const mid = pulseFlightMs(3.2) / 2
++
++    expect(waterPulseFrame(peaks, mid)).toBe(FULL_CELL.repeat(WATER_CELL_COUNT))
++  })
++
++  it('a tall drop is still airborne after a short drop has landed', () => {
++    const peaks = [3.2, 3.2, 1, 1]
++    // clock = exact landing time of the short drop: it is back at rest while
++    // the tall drop is still climbing (τ ≈ 0.56 > 0.5 → past its peak).
++    const frame = waterPulseFrame(peaks, pulseFlightMs(1))
++
++    expect(frame[0]).toBe(FULL_CELL)
++    expect(frame[1]).toBe(REST_CELL)
++    expect(frame.slice(2)).toBe(REST_CELL.repeat(WATER_CELL_COUNT - 2))
++  })
++
++  it('renders half-cell droplets when the two columns of a cell differ', () => {
++    // Left column full, right column resting → only the left dots are set.
++    const peaks = [3.2, 0]
++    const frame = waterPulseFrame(peaks, pulseFlightMs(3.2) / 2)
++
++    expect(frame[0]).toBe('\u28C7')
++  })
++
++  it('always renders the full water body width', () => {
++    const peaks = Array.from({ length: WATER_CELL_COUNT * 2 }, (_, i) => (i % 5) / 2 + 1)
++
++    for (const clock of [0, 60, 180, 540]) {
++      expect(waterPulseFrame(peaks, clock)).toHaveLength(WATER_CELL_COUNT)
++    }
++  })
++})
++
++describe('wave pulse store', () => {
++  it('bumps once per pulse and keeps the count monotonic', () => {
++    $wavePulse.set(0)
++    pulseWave()
++    pulseWave()
++
++    expect($wavePulse.get()).toBe(2)
++  })
++})
 diff --git a/ui-tui/src/app/createGatewayEventHandler.ts b/ui-tui/src/app/createGatewayEventHandler.ts
-index 55a31f97dd..75740ab46b 100644
+index 55a31f97dd..373e047c01 100644
 --- a/ui-tui/src/app/createGatewayEventHandler.ts
 +++ b/ui-tui/src/app/createGatewayEventHandler.ts
-@@ -29,6 +29,7 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
+@@ -29,15 +29,18 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
  import type { GatewayEventHandlerContext } from './interfaces.js'
  import { getOverlayState, patchOverlayState } from './overlayStore.js'
  import { flashGoodVibes, flashPet } from './petFlashStore.js'
@@ -3468,7 +3554,10 @@ index 55a31f97dd..75740ab46b 100644
  import { turnController } from './turnController.js'
  import { getTurnState } from './turnStore.js'
  import { getUiState, patchUiState } from './uiStore.js'
-@@ -38,6 +39,7 @@ const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
+ import { isWakeUserDisabled } from './wakeState.js'
++import { pulseWave } from './wavePulseStore.js'
+ 
+ const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
  
  const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
  
@@ -3476,7 +3565,7 @@ index 55a31f97dd..75740ab46b 100644
  // The last gateway skin, kept so the theme can be re-derived when the OSC-11
  // background answer arrives after (or without) gateway.ready.
  let lastSkin: GatewaySkin | null = null
-@@ -395,6 +397,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+@@ -395,6 +398,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
    let pendingThinkingStatus = ''
    let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
    let startupPromptSubmitted = false
@@ -3486,7 +3575,7 @@ index 55a31f97dd..75740ab46b 100644
  
    // Request IDs of clarify prompts we've already flushed to the transcript as
    // an abandoned-prompt record, so the tool.complete and message.complete
-@@ -771,6 +776,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+@@ -771,6 +777,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
          resetAgentsNudgeTurnState()
          turnController.startMessage()
  
@@ -3494,7 +3583,7 @@ index 55a31f97dd..75740ab46b 100644
          return
        case 'status.update': {
          const p = ev.payload
-@@ -779,6 +785,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+@@ -779,6 +786,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
            return
          }
  
@@ -3502,7 +3591,7 @@ index 55a31f97dd..75740ab46b 100644
          if (p.kind === 'goal') {
            sys(p.text)
  
-@@ -1045,6 +1052,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+@@ -1045,6 +1053,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
  
        case 'reasoning.delta':
          if (ev.payload?.text) {
@@ -3521,7 +3610,16 @@ index 55a31f97dd..75740ab46b 100644
            turnController.recordReasoningDelta(ev.payload.text, Boolean(ev.payload.verbose))
          }
  
-@@ -1327,11 +1346,43 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+@@ -1112,6 +1132,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+         return
+ 
+       case 'tool.start':
++        // Every tool call triggers one water-wave splash in the status line.
++        pulseWave()
+         turnController.recordTodos(ev.payload.todos)
+         turnController.recordToolStart(
+           ev.payload.tool_id,
+@@ -1327,11 +1349,44 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
          )
  
          return
@@ -3556,6 +3654,7 @@ index 55a31f97dd..75740ab46b 100644
 +        }
 +
 +        const chars = Number(ev.payload?.chars ?? 0)
++
 +        if (Number.isFinite(chars) && chars > 0) {
 +          feedTpsChars(chars)
 +        }
@@ -3566,7 +3665,7 @@ index 55a31f97dd..75740ab46b 100644
        case 'message.interim': {
          const text = ev.payload?.text
  
-@@ -1359,6 +1410,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+@@ -1359,6 +1414,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
  
          setStatus('ready')
  
@@ -3777,19 +3876,46 @@ index 283ebe5a11..2c77263148 100644
      // Ink's exit() calls unmount() which resets terminal modes but does NOT
      // call process.exit().  Without an explicit exit the Node process stays
      // alive (stdin listener keeps the event loop open), so the process.on('exit')
+diff --git a/ui-tui/src/app/wavePulseStore.ts b/ui-tui/src/app/wavePulseStore.ts
+new file mode 100644
+index 0000000000..f2c746261f
+--- /dev/null
++++ b/ui-tui/src/app/wavePulseStore.ts
+@@ -0,0 +1,19 @@
++import { atom } from 'nanostores'
++
++/**
++ * Status-line water wave pulse state.
++ *
++ * Every `tool.start` gateway event bumps the counter; the status-rule
++ * WaterTicker subscribes and plays exactly one splash pulse per bump.
++ *
++ * Keeping the trigger in its own store decouples the wave from token
++ * throughput: a tool call start overwrites the TPS sample, which used to make
++ * the TPS-driven wave cadence jump mid-call. The wave now answers only to
++ * tool activity, and the TPS meter keeps its own independent readout.
++ */
++export const $wavePulse = atom(0)
++
++/** Signal one tool-call splash in the status-line water. */
++export const pulseWave = (): void => {
++  $wavePulse.set($wavePulse.get() + 1)
++}
 diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
-index 1ff100f6d1..40d20f452b 100644
+index 1ff100f6d1..7fed1a7e35 100644
 --- a/ui-tui/src/components/appChrome.tsx
 +++ b/ui-tui/src/components/appChrome.tsx
-@@ -6,6 +6,7 @@ import unicodeSpinners from 'unicode-animations'
+@@ -6,7 +6,9 @@ import unicodeSpinners from 'unicode-animations'
  import { $delegationState } from '../app/delegationStore.js'
  import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
  import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 +import { $tpsTarget } from '../app/tpsStore.js'
  import { useTurnSelector } from '../app/turnStore.js'
++import { $wavePulse } from '../app/wavePulseStore.js'
  import { DEV_CREDITS_MODE } from '../config/env.js'
  import { FACES } from '../content/faces.js'
-@@ -14,6 +15,7 @@ import { fmtDuration } from '../domain/messages.js'
+ import { VERBS } from '../content/verbs.js'
+@@ -14,6 +16,7 @@ import { fmtDuration } from '../domain/messages.js'
  import { stickyPromptFromViewport } from '../domain/viewport.js'
  import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
  import { fmtK } from '../lib/text.js'
@@ -3797,7 +3923,7 @@ index 1ff100f6d1..40d20f452b 100644
  import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
  import type { Theme } from '../theme.js'
  import type { Msg, Usage } from '../types.js'
-@@ -295,6 +297,7 @@ export interface StatusBarSegments {
+@@ -295,6 +298,7 @@ export interface StatusBarSegments {
    compressions: boolean
    duration: boolean
    subagents: boolean
@@ -3805,7 +3931,7 @@ index 1ff100f6d1..40d20f452b 100644
    voice: boolean
  }
  
-@@ -305,6 +308,7 @@ export function statusBarSegments(cols: number): StatusBarSegments {
+@@ -305,6 +309,7 @@ export function statusBarSegments(cols: number): StatusBarSegments {
      compactCtx: w < 72,
      bar: w >= 72,
      duration: w >= 76,
@@ -3813,7 +3939,7 @@ index 1ff100f6d1..40d20f452b 100644
      compressions: w >= 80,
      voice: w >= 84,
      bg: w >= 88,
-@@ -436,7 +440,98 @@ const shortModelLabel = (model: string) =>
+@@ -436,7 +441,140 @@ const shortModelLabel = (model: string) =>
      .trim()
  
  const modelLabel = (model: string, effort?: string, fast?: boolean) =>
@@ -3827,7 +3953,7 @@ index 1ff100f6d1..40d20f452b 100644
 +  [provider ? `${provider.trim()} · ` : '', modelLabel(model, effort, fast)].join('')
 +
 +// A full Braille water body is always exactly 25 terminal cells wide. Keeping
-+// it mounted while idle lets the final active frame freeze in place instead of
++// it mounted while idle lets the calm resting line stay in place instead of
 +// replacing the indicator with a shorter "ready" label that shifts the model
 +// and context readout.
 +export const WATER_CELL_COUNT = 25
@@ -3836,14 +3962,31 @@ index 1ff100f6d1..40d20f452b 100644
 +// dark terminals — theme-independent. Tune this single hex to taste.
 +const STATUS_METRIC_GRAY = '#AEB4BA'
 +// 16 FPS is quick enough to read as fluid in Ink while staying well below a
-+// terminal-wide 60 FPS repaint loop. The phase step keeps the original wave
-+// velocity, but exposes twice as many intermediate surface positions.
++// terminal-wide 60 FPS repaint loop.
 +const WATER_FRAME_MS = 60
-+// Wave cadence scales with live token throughput: slow drift at low TPS, the
-+// classic 60ms pace at ~70 t/s, full speed from ~100 t/s up. Idle stays
-+// frozen (WaterTicker only ticks while busy). Pure + clamped for tests.
-+export const waterTickMs = (tps: number): number =>
-+  Math.max(30, 130 - Math.min(Math.max(tps, 0), 100))
++// The water body rests as one calm bottom line (row 3 of 0..4; row 0 is a
++// full cell, row 4 is dry). Each tool call launches every column like a
++// droplet with its own random peak height above that line.
++const REST_SURFACE = 3.2
++const PEAK_MIN = 1.0
++const PEAK_MAX = 3.2
++// Flight time under gravity scales with the square root of the peak height
++// (T = 2√(2h/g)): a tall drop hangs and drifts down slowly while a short one
++// lands almost immediately — the high-slow / low-fast fall that reads as
++// physics. The tallest splash (~3.2 rows) lands at ~540ms, the shortest at
++// ~300ms.
++const FLIGHT_K = 300
++
++/** Milliseconds a droplet of the given peak height stays in the air. */
++export const pulseFlightMs = (rise: number): number => FLIGHT_K * Math.sqrt(Math.max(0, rise))
++
++/** Random droplet peaks, one per water pixel (2 per terminal cell). */
++export const freshWavePeaks = (count: number = WATER_CELL_COUNT * 2): number[] =>
++  Array.from({ length: count }, () => PEAK_MIN + Math.random() * (PEAK_MAX - PEAK_MIN))
++
++/** When every droplet of this pulse has landed (pulse duration). */
++export const maxPulseMs = (peaks: readonly number[]): number =>
++  peaks.reduce((max, peak) => Math.max(max, pulseFlightMs(peak)), 0)
 +
 +const BRAILLE_DOTS = [
 +  [0x01, 0x08],
@@ -3852,25 +3995,21 @@ index 1ff100f6d1..40d20f452b 100644
 +  [0x40, 0x80]
 +] as const
 +
-+export const waterFrame = (frame: number): string => {
++export const waterPulseFrame = (peaks: readonly number[], clock: number): string => {
 +  const pixelCount = WATER_CELL_COUNT * 2
-+  const phase = frame * 0.105
 +  const surface: number[] = []
 +
 +  for (let pixel = 0; pixel < pixelCount; pixel += 1) {
-+    const x = pixel / (pixelCount - 1)
-+    const source = 0.52 + 0.18 * Math.sin(phase * 0.31)
-+    const distance = Math.abs(x - source)
-+
-+    const height =
-+      2.4 +
-+      0.9 * Math.sin(x * Math.PI * 2 * 1.25 + phase) +
-+      0.45 * Math.sin(x * Math.PI * 2 * 3.7 - phase * 0.73) +
-+      0.85 * Math.sin(distance * 30 - phase * 2.1) * Math.exp(-distance * 5.5)
++    const peak = peaks[pixel] ?? 0
++    const flight = pulseFlightMs(peak)
++    const tau = clock >= flight ? 1 : clock / flight
++    // Parabola under gravity: rises from rest to `peak` at τ=0.5, lands back
++    // softly at τ=1 (the descent eases out as the droplet touches down).
++    const rise = 4 * peak * tau * (1 - tau)
 +
 +    // Row 4 leaves both dot columns empty. Letting troughs reach it creates
 +    // a genuine dry gap instead of flattening every low point to ⣤.
-+    surface.push(Math.max(0, Math.min(4, Math.round(height))))
++    surface.push(Math.max(0, Math.min(4, Math.round(REST_SURFACE - rise))))
 +  }
 +
 +  return Array.from({ length: WATER_CELL_COUNT }, (_, cell) => {
@@ -3888,32 +4027,61 @@ index 1ff100f6d1..40d20f452b 100644
 +  }).join('')
 +}
 +
-+function WaterTicker({ busy, color }: { busy: boolean; color: string }) {
-+  // Do not reset the frame when a turn ends: pausing on the last frame makes
-+  // the status rule visually stable between turns while preserving its width.
-+  const [frame, setFrame] = useState(0)
-+  const tps = useStore($tpsTarget)
-+  const tickMs = waterTickMs(tps)
++function WaterTicker({ color }: { color: string }) {
++  // One splash per tool call: the gateway bumps $wavePulse on every
++  // `tool.start`, this component re-rolls random droplet peaks and restarts
++  // the clock. Between pulses the body rests on the calm line, and the status
++  // rule stays mounted so model/context columns never shift.
++  const pulse = useStore($wavePulse)
++  const [peaks, setPeaks] = useState<number[]>(() => freshWavePeaks())
++  const [clock, setClock] = useState(0)
++  const peaksRef = useRef(peaks)
++  peaksRef.current = peaks
++  // Total pulse duration re-read on every render so the interval always
++  // settles on the peaks it is actually animating (the peaks state lands one
++  // render after the pulse bump).
++  const flightRef = useRef(0)
++  flightRef.current = maxPulseMs(peaks)
 +
 +  useEffect(() => {
-+    if (!busy) {
++    if (pulse <= 0) {
 +      return
 +    }
 +
-+    // The interval re-arms on every tps change (the target is EMA-smoothed,
-+    // so cadence glides instead of snapping); the frame counter never resets,
-+    // so a speed change keeps the wave phase continuous.
-+    const id = setInterval(() => setFrame(current => current + 1), tickMs)
++    // Fresh random heights + clock reset = one new pulse, even when the
++    // previous splash is still mid-flight.
++    setPeaks(freshWavePeaks())
++    setClock(0)
++  }, [pulse])
++
++  useEffect(() => {
++    if (pulse <= 0) {
++      return
++    }
++
++    const id = setInterval(() => {
++      setClock(current => {
++        if (current >= flightRef.current) {
++          clearInterval(id)
++
++          return current
++        }
++
++        const next = current + WATER_FRAME_MS
++
++        return next >= flightRef.current ? flightRef.current : next
++      })
++    }, WATER_FRAME_MS)
 +
 +    return () => clearInterval(id)
-+  }, [busy, tickMs, tps])
++  }, [pulse])
 +
-+  return <Text color={color}>{waterFrame(frame)}</Text>
++  return <Text color={color}>{waterPulseFrame(peaks, clock)}</Text>
 +}
  
  export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
    const [active, setActive] = useState(false)
-@@ -463,6 +558,58 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
+@@ -463,6 +601,59 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
    return <Text color={color}>♥</Text>
  }
  
@@ -3941,6 +4109,7 @@ index 1ff100f6d1..40d20f452b 100644
 +
 +      return
 +    }
++
 +    const id = setInterval(() => {
 +      const current = displayRef.current
 +      const next = current + (target - current) * TPS_EASE
@@ -3972,7 +4141,7 @@ index 1ff100f6d1..40d20f452b 100644
  export function StatusRule({
    battery,
    focusView,
-@@ -472,6 +619,7 @@ export function StatusRule({
+@@ -472,6 +663,7 @@ export function StatusRule({
    status,
    statusColor,
    model,
@@ -3980,7 +4149,7 @@ index 1ff100f6d1..40d20f452b 100644
    modelFast,
    modelReasoningEffort,
    indicatorStyle = 'kaomoji',
-@@ -481,6 +629,7 @@ export function StatusRule({
+@@ -481,6 +673,7 @@ export function StatusRule({
    lastTurnEndedAt,
    liveSessionCount,
    sessionStartedAt,
@@ -3988,7 +4157,7 @@ index 1ff100f6d1..40d20f452b 100644
    turnStartedAt,
    voiceLabel,
    onSessionCountClick,
-@@ -501,10 +650,75 @@ export function StatusRule({
+@@ -501,10 +694,73 @@ export function StatusRule({
        : ''
  
    const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
@@ -4012,6 +4181,7 @@ index 1ff100f6d1..40d20f452b 100644
 +    const fixedContextText = usage.context_max
 +      ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
 +      : `${fmtK(usage.total)}/—`
++
 +    const fixedContextSuffix = compressionCount ? ` · cmp ${compressionCount}` : ''
 +    // TPS is pinned at the right edge under ALL widths: only the model
 +    // segment yields (flexGrow/shrink), so the corner slot never collapses
@@ -4021,10 +4191,7 @@ index 1ff100f6d1..40d20f452b 100644
 +      <Box height={1}>
 +        <Box flexDirection="row" flexShrink={1} overflow="hidden" width={Math.max(1, cols)}>
 +          <Box flexShrink={0} width={WATER_CELL_COUNT}>
-+            <WaterTicker
-+              busy={busy}
-+              color={busy ? statusColor : t.color.muted}
-+            />
++            <WaterTicker color={busy ? statusColor : t.color.muted} />
 +          </Box>
 +          <Text color={STATUS_METRIC_GRAY}>{' │ '}</Text>
 +          <Box flexGrow={1} flexShrink={1} overflow="hidden">
@@ -4066,7 +4233,7 @@ index 1ff100f6d1..40d20f452b 100644
    const batteryText = showBattery ? batteryLabel(battery!) : ''
    const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
    const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
-@@ -561,7 +775,7 @@ export function StatusRule({
+@@ -561,7 +817,7 @@ export function StatusRule({
    }
  
    const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
@@ -4075,7 +4242,7 @@ index 1ff100f6d1..40d20f452b 100644
  
    // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
    // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
-@@ -569,11 +783,12 @@ export function StatusRule({
+@@ -569,11 +825,12 @@ export function StatusRule({
    // raises remaining nets a negative Δ (honest).
    const devCreditsText =
      typeof usage.dev_credits_spent_micros === 'number'
@@ -4089,7 +4256,7 @@ index 1ff100f6d1..40d20f452b 100644
  
    // Idle clock — time since the last final agent response. Hidden while busy
    // (the FaceTicker's elapsed tail covers the live turn) and before the first
-@@ -582,10 +797,10 @@ export function StatusRule({
+@@ -582,10 +839,10 @@ export function StatusRule({
      segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
  
    const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
@@ -4102,7 +4269,7 @@ index 1ff100f6d1..40d20f452b 100644
    const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
  
    // Parked-background reassurance: a top-level delegate_task runs in the
-@@ -670,6 +885,7 @@ export function StatusRule({
+@@ -670,6 +927,7 @@ export function StatusRule({
                {ctxLabel}
              </Text>
            ) : null}
@@ -4110,7 +4277,7 @@ index 1ff100f6d1..40d20f452b 100644
          </Box>
          {showFocus ? (
            <Box flexDirection="row" flexShrink={0}>
-@@ -863,11 +1079,13 @@ interface StatusRuleProps {
+@@ -863,11 +1121,13 @@ interface StatusRuleProps {
    cols: number
    cwdLabel: string
    model: string
