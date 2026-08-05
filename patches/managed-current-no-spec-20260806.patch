@@ -3443,17 +3443,18 @@ index 0000000000..abb1f1485f
 +})
 diff --git a/ui-tui/src/__tests__/waterPulse.test.ts b/ui-tui/src/__tests__/waterPulse.test.ts
 new file mode 100644
-index 0000000000..7da8f3b959
+index 0000000000..5d2b406158
 --- /dev/null
 +++ b/ui-tui/src/__tests__/waterPulse.test.ts
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,162 @@
 +import { describe, expect, it } from 'vitest'
 +
-+import { $wavePulse, pulseWave } from '../app/wavePulseStore.js'
++import { $wavePulse, $waveVibrate, pulseWave, vibrateWave } from '../app/wavePulseStore.js'
 +import {
 +  freshWavePeaks,
 +  maxPulseMs,
 +  pulseFlightMs,
++  vibrateOffset,
 +  WATER_CELL_COUNT,
 +  waterFrame,
 +  waterTickMs
@@ -3469,11 +3470,11 @@ index 0000000000..7da8f3b959
 +
 +describe('water drift cadence', () => {
 +  it('scales with token throughput, clamped to a safe band', () => {
-+    expect(waterTickMs(0)).toBe(80)
-+    expect(waterTickMs(20)).toBe(60)
-+    expect(waterTickMs(50)).toBe(30)
++    expect(waterTickMs(0)).toBe(60)
++    expect(waterTickMs(15)).toBe(45)
++    expect(waterTickMs(30)).toBe(30)
 +    expect(waterTickMs(200)).toBe(30)
-+    expect(waterTickMs(-5)).toBe(80)
++    expect(waterTickMs(-5)).toBe(60)
 +  })
 +
 +  it('is deterministic per frame and advances with the frame', () => {
@@ -3562,6 +3563,36 @@ index 0000000000..7da8f3b959
 +  })
 +})
 +
++describe('wave vibration (post-tool tremor)', () => {
++  it('shimmers at full strength when the tremor starts, then settles to zero', () => {
++    // A pixel with a non-zero phase must be displaced at clock 0...
++    const start = vibrateOffset(3, 0)
++
++    expect(start).not.toBe(0)
++    expect(Math.abs(start)).toBeLessThanOrEqual(1.2)
++    expect(vibrateOffset(3, 2500)).toBe(0)
++    expect(vibrateOffset(3, 4000)).toBe(0)
++  })
++
++  it('decays between the start and the end of the tremor', () => {
++    const early = Math.abs(vibrateOffset(3, 200))
++    const late = Math.abs(vibrateOffset(3, 2000))
++
++    // The decay factor dominates the phase drift: at 2s the amplitude is a
++    // fraction of what it was at 200ms.
++    expect(late).toBeLessThan(early)
++  })
++
++  it('shakes the rendered surface and returns to the exact drift frame once settled', () => {
++    const base = waterFrame(0)
++    const shaking = waterFrame(0, undefined, 0)
++    const settled = waterFrame(0, undefined, 2500)
++
++    expect(shaking).not.toBe(base)
++    expect(settled).toBe(base)
++  })
++})
++
 +describe('wave pulse store', () => {
 +  it('bumps once per pulse and keeps the count monotonic', () => {
 +    $wavePulse.set(0)
@@ -3570,9 +3601,16 @@ index 0000000000..7da8f3b959
 +
 +    expect($wavePulse.get()).toBe(2)
 +  })
++
++  it('bumps once per completed tool', () => {
++    $waveVibrate.set(0)
++    vibrateWave()
++
++    expect($waveVibrate.get()).toBe(1)
++  })
 +})
 diff --git a/ui-tui/src/app/createGatewayEventHandler.ts b/ui-tui/src/app/createGatewayEventHandler.ts
-index 55a31f97dd..373e047c01 100644
+index 55a31f97dd..8aa499b650 100644
 --- a/ui-tui/src/app/createGatewayEventHandler.ts
 +++ b/ui-tui/src/app/createGatewayEventHandler.ts
 @@ -29,15 +29,18 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
@@ -3584,7 +3622,7 @@ index 55a31f97dd..373e047c01 100644
  import { getTurnState } from './turnStore.js'
  import { getUiState, patchUiState } from './uiStore.js'
  import { isWakeUserDisabled } from './wakeState.js'
-+import { pulseWave } from './wavePulseStore.js'
++import { pulseWave, vibrateWave } from './wavePulseStore.js'
  
  const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
  
@@ -3648,7 +3686,19 @@ index 55a31f97dd..373e047c01 100644
          turnController.recordTodos(ev.payload.todos)
          turnController.recordToolStart(
            ev.payload.tool_id,
-@@ -1327,11 +1349,44 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+@@ -1122,6 +1144,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+ 
+         return
+       case 'tool.complete': {
++        // A finished tool leaves the water trembling for a couple of seconds
++        // — the wave stays lively between tool calls instead of drifting at
++        // zero-TPS pace.
++        vibrateWave()
++
+         // The clarify tool finishing with its overlay still live means it was
+         // abandoned (backend _block timed out, empty answer). A real answer
+         // clears the overlay in answerClarify() before this fires, so this
+@@ -1327,11 +1354,44 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
          )
  
          return
@@ -3694,7 +3744,7 @@ index 55a31f97dd..373e047c01 100644
        case 'message.interim': {
          const text = ev.payload?.text
  
-@@ -1359,6 +1414,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+@@ -1359,6 +1419,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
  
          setStatus('ready')
  
@@ -3907,10 +3957,10 @@ index 283ebe5a11..2c77263148 100644
      // alive (stdin listener keeps the event loop open), so the process.on('exit')
 diff --git a/ui-tui/src/app/wavePulseStore.ts b/ui-tui/src/app/wavePulseStore.ts
 new file mode 100644
-index 0000000000..f2c746261f
+index 0000000000..6902d2c389
 --- /dev/null
 +++ b/ui-tui/src/app/wavePulseStore.ts
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,25 @@
 +import { atom } from 'nanostores'
 +
 +/**
@@ -3925,13 +3975,19 @@ index 0000000000..f2c746261f
 + * tool activity, and the TPS meter keeps its own independent readout.
 + */
 +export const $wavePulse = atom(0)
++export const $waveVibrate = atom(0)
 +
-+/** Signal one tool-call splash in the status-line water. */
++/** Signal one tool-call splash (`tool.start`). */
 +export const pulseWave = (): void => {
 +  $wavePulse.set($wavePulse.get() + 1)
 +}
++
++/** Signal a post-tool tremor (`tool.complete`): the wave vibrates ~2.5s. */
++export const vibrateWave = (): void => {
++  $waveVibrate.set($waveVibrate.get() + 1)
++}
 diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
-index 1ff100f6d1..280181e82f 100644
+index 1ff100f6d1..6b83c552a9 100644
 --- a/ui-tui/src/components/appChrome.tsx
 +++ b/ui-tui/src/components/appChrome.tsx
 @@ -6,7 +6,9 @@ import unicodeSpinners from 'unicode-animations'
@@ -3940,7 +3996,7 @@ index 1ff100f6d1..280181e82f 100644
  import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 +import { $tpsTarget } from '../app/tpsStore.js'
  import { useTurnSelector } from '../app/turnStore.js'
-+import { $wavePulse } from '../app/wavePulseStore.js'
++import { $wavePulse, $waveVibrate } from '../app/wavePulseStore.js'
  import { DEV_CREDITS_MODE } from '../config/env.js'
  import { FACES } from '../content/faces.js'
  import { VERBS } from '../content/verbs.js'
@@ -3968,7 +4024,7 @@ index 1ff100f6d1..280181e82f 100644
      compressions: w >= 80,
      voice: w >= 84,
      bg: w >= 88,
-@@ -436,7 +441,234 @@ const shortModelLabel = (model: string) =>
+@@ -436,7 +441,291 @@ const shortModelLabel = (model: string) =>
      .trim()
  
  const modelLabel = (model: string, effort?: string, fast?: boolean) =>
@@ -4000,15 +4056,22 @@ index 1ff100f6d1..280181e82f 100644
 +const COAST_TICKS = 4
 +const COAST_SLOWDOWN = 1.5
 +const COAST_MAX_MS = 700
-+// Drift cadence scales with live token throughput: a brisk 80ms pace even at
-+// zero TPS (tool calls, reasoning), the classic 60ms at ~20 t/s, full speed
-+// from ~50 t/s up. The floor keeps the wave visibly moving through a whole
-+// turn — only the end-of-turn coast is allowed to slow it to a stop. The
-+// splash (tool-call pulse) runs on its own fixed cadence on top, so a tool
-+// call pausing the token stream never freezes or jumps the wave. Pure +
-+// clamped for tests.
++// Post-tool tremor: when a tool completes the surface vibrates for ~2.5s —
++// a high-frequency shimmer whose amplitude decays to zero, so the water
++// stays lively between tool calls instead of drifting at zero-TPS pace.
++const VIBRATE_MS = 2500
++const VIBRATE_AMP = 1.2
++const VIBRATE_TICK_MS = 40
++const VIBRATE_SPREAD = 2.3
++const VIBRATE_SPEED = 0.021
++// Drift cadence scales with live token throughput: a brisk 60ms pace even at
++// zero TPS (reasoning, between tool calls), full speed from ~30 t/s up. The
++// floor keeps the wave visibly moving through a whole turn — only the
++// end-of-turn coast is allowed to slow it to a stop. The splash (tool-call
++// pulse) runs on its own fixed cadence on top, so a tool call pausing the
++// token stream never freezes or jumps the wave. Pure + clamped for tests.
 +export const waterTickMs = (tps: number): number =>
-+  Math.max(30, 80 - Math.min(Math.max(tps, 0), 50))
++  Math.max(30, 60 - Math.min(Math.max(tps, 0), 30))
 +// Splash droplets launch from the drifting surface; each has a random peak
 +// height above it. The range is wide and the distribution is square-biased
 +// toward the short end, so a splash reads as high contrast: most droplets
@@ -4067,7 +4130,22 @@ index 1ff100f6d1..280181e82f 100644
 +  clock: number
 +}
 +
-+export const waterFrame = (frame: number, splash?: WaterSplash): string => {
++/** Tremor offset for one pixel at elapsed vibration time (ms); 0 once settled. */
++export const vibrateOffset = (pixel: number, clock: number): number => {
++  if (clock <= 0) {
++    return VIBRATE_AMP * Math.sin(pixel * VIBRATE_SPREAD)
++  }
++
++  if (clock >= VIBRATE_MS) {
++    return 0
++  }
++
++  const decay = Math.pow(1 - clock / VIBRATE_MS, 1.4)
++
++  return VIBRATE_AMP * decay * Math.sin(pixel * VIBRATE_SPREAD + clock * VIBRATE_SPEED)
++}
++
++export const waterFrame = (frame: number, splash?: WaterSplash, vibrateClock?: number): string => {
 +  const pixelCount = WATER_CELL_COUNT * 2
 +  const surface: number[] = []
 +
@@ -4082,6 +4160,10 @@ index 1ff100f6d1..280181e82f 100644
 +      // τ=0.5, lands back softly at τ=1 (the descent eases out as the droplet
 +      // touches down).
 +      height -= 4 * peak * tau * (1 - tau)
++    }
++
++    if (vibrateClock !== undefined) {
++      height += vibrateOffset(pixel, vibrateClock)
 +    }
 +
 +    // Row 4 leaves both dot columns empty. Letting troughs reach it creates
@@ -4115,12 +4197,15 @@ index 1ff100f6d1..280181e82f 100644
 +  // momentum ease-out instead of a hard stop. The status rule stays mounted
 +  // so model/context columns never shift.
 +  const pulse = useStore($wavePulse)
++  const vibrate = useStore($waveVibrate)
 +  const tps = useStore($tpsTarget)
 +  const tickMs = waterTickMs(tps)
 +  const [driftFrame, setDriftFrame] = useState(0)
 +  const [peaks, setPeaks] = useState<number[]>(() => freshWavePeaks())
 +  // -1 = no splash in flight.
 +  const [splashClock, setSplashClock] = useState(-1)
++  // -1 = no tremor in flight.
++  const [vibrateClock, setVibrateClock] = useState(-1)
 +  // 'drift' while busy, 'coast' while winding down after a turn, 'idle' once
 +  // the wave has frozen.
 +  const [phase, setPhase] = useState<'drift' | 'coast' | 'idle'>('idle')
@@ -4195,16 +4280,44 @@ index 1ff100f6d1..280181e82f 100644
 +    return () => clearInterval(id)
 +  }, [splashActive])
 +
++  // Tremor ticker: a finished tool vibrates the surface at a fast cadence,
++  // amplitude decaying to zero over ~2.5s. Stops itself once settled.
++  const vibrateActive = vibrateClock >= 0
++
++  useEffect(() => {
++    if (vibrate <= 0) {
++      return
++    }
++
++    setVibrateClock(0)
++  }, [vibrate])
++
++  useEffect(() => {
++    if (!vibrateActive) {
++      return
++    }
++
++    const id = setInterval(() => {
++      setVibrateClock(current => (current >= VIBRATE_MS ? -1 : current + VIBRATE_TICK_MS))
++    }, VIBRATE_TICK_MS)
++
++    return () => clearInterval(id)
++  }, [vibrateActive])
++
 +  return (
 +    <Text color={color}>
-+      {waterFrame(driftFrame, splashActive ? { peaks, clock: splashClock } : undefined)}
++      {waterFrame(
++        driftFrame,
++        splashActive ? { peaks, clock: splashClock } : undefined,
++        vibrateActive ? vibrateClock : undefined
++      )}
 +    </Text>
 +  )
 +}
  
  export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
    const [active, setActive] = useState(false)
-@@ -463,6 +695,59 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
+@@ -463,6 +752,59 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
    return <Text color={color}>♥</Text>
  }
  
@@ -4264,7 +4377,7 @@ index 1ff100f6d1..280181e82f 100644
  export function StatusRule({
    battery,
    focusView,
-@@ -472,6 +757,7 @@ export function StatusRule({
+@@ -472,6 +814,7 @@ export function StatusRule({
    status,
    statusColor,
    model,
@@ -4272,7 +4385,7 @@ index 1ff100f6d1..280181e82f 100644
    modelFast,
    modelReasoningEffort,
    indicatorStyle = 'kaomoji',
-@@ -481,6 +767,7 @@ export function StatusRule({
+@@ -481,6 +824,7 @@ export function StatusRule({
    lastTurnEndedAt,
    liveSessionCount,
    sessionStartedAt,
@@ -4280,7 +4393,7 @@ index 1ff100f6d1..280181e82f 100644
    turnStartedAt,
    voiceLabel,
    onSessionCountClick,
-@@ -501,10 +788,76 @@ export function StatusRule({
+@@ -501,10 +845,76 @@ export function StatusRule({
        : ''
  
    const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
@@ -4359,7 +4472,7 @@ index 1ff100f6d1..280181e82f 100644
    const batteryText = showBattery ? batteryLabel(battery!) : ''
    const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
    const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
-@@ -561,7 +914,7 @@ export function StatusRule({
+@@ -561,7 +971,7 @@ export function StatusRule({
    }
  
    const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
@@ -4368,7 +4481,7 @@ index 1ff100f6d1..280181e82f 100644
  
    // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
    // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
-@@ -569,11 +922,12 @@ export function StatusRule({
+@@ -569,11 +979,12 @@ export function StatusRule({
    // raises remaining nets a negative Δ (honest).
    const devCreditsText =
      typeof usage.dev_credits_spent_micros === 'number'
@@ -4382,7 +4495,7 @@ index 1ff100f6d1..280181e82f 100644
  
    // Idle clock — time since the last final agent response. Hidden while busy
    // (the FaceTicker's elapsed tail covers the live turn) and before the first
-@@ -582,10 +936,10 @@ export function StatusRule({
+@@ -582,10 +993,10 @@ export function StatusRule({
      segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
  
    const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
@@ -4395,7 +4508,7 @@ index 1ff100f6d1..280181e82f 100644
    const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
  
    // Parked-background reassurance: a top-level delegate_task runs in the
-@@ -670,6 +1024,7 @@ export function StatusRule({
+@@ -670,6 +1081,7 @@ export function StatusRule({
                {ctxLabel}
              </Text>
            ) : null}
@@ -4403,7 +4516,7 @@ index 1ff100f6d1..280181e82f 100644
          </Box>
          {showFocus ? (
            <Box flexDirection="row" flexShrink={0}>
-@@ -863,11 +1218,13 @@ interface StatusRuleProps {
+@@ -863,11 +1275,13 @@ interface StatusRuleProps {
    cols: number
    cwdLabel: string
    model: string
