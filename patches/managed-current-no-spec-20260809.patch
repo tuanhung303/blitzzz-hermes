@@ -3062,7 +3062,7 @@ index 56d80a350f..b0106caed3 100644
    })
  })
 diff --git a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
-index ec13205649..487013c253 100644
+index ec13205649..2065a8c2ab 100644
 --- a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
 +++ b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
 @@ -5,6 +5,15 @@ import { StatusRule } from '../components/appChrome.js'
@@ -3138,7 +3138,7 @@ index ec13205649..487013c253 100644
  }
  
  const baseProps = {
-@@ -219,7 +230,7 @@ describe('StatusRule session count click target', () => {
+@@ -219,11 +230,11 @@ describe('StatusRule session count click target', () => {
      const clickableSessionCount = findClickableWithText(element, '1 session')
  
      expect(clickableSessionCount).not.toBeNull()
@@ -3147,7 +3147,33 @@ index ec13205649..487013c253 100644
      expect(openSwitcher).toHaveBeenCalledOnce()
    })
  
-@@ -336,7 +347,7 @@ describe('StatusRule credits notice render priority', () => {
+-  it('keeps status + model and drops the low-value tail on a narrow terminal', () => {
++  it('never inserts transient status headlines into the fixed water row', () => {
+     const element = StatusRule({
+       bgCount: 0,
+       busy: false,
+@@ -233,7 +244,7 @@ describe('StatusRule session count click target', () => {
+       model: 'opus-4.8',
+       onSessionCountClick: vi.fn(),
+       sessionStartedAt: Date.now() - 60_000,
+-      status: 'ready',
++      status: 'headline summary that belongs in the transcript',
+       statusColor: DEFAULT_THEME.color.ok,
+       t: DEFAULT_THEME,
+       turnStartedAt: null,
+@@ -251,8 +262,9 @@ describe('StatusRule session count click target', () => {
+ 
+     const rendered = textContent(element)
+ 
+-    // Must-keep essentials survive intact …
+-    expect(rendered).toContain('ready')
++    // The fixed row owns stable metrics only. Transient headline/status text
++    // belongs in the transcript and must not displace the model.
++    expect(rendered).not.toContain('headline summary')
+     expect(rendered).toContain('opus 4.8')
+     // … while the low-value tail (session count) is dropped, not truncated.
+     expect(rendered).not.toContain('3 sessions')
+@@ -336,7 +348,7 @@ describe('StatusRule credits notice render priority', () => {
      expect(noticeText?.props.wrap).toBe('truncate-end')
  
      // Its container box yields first (flexShrink=1) so model stays visible.
@@ -3156,7 +3182,7 @@ index ec13205649..487013c253 100644
        if (!React.isValidElement(node)) {
          if (Array.isArray(node)) {
            for (const c of node) {
-@@ -351,14 +362,16 @@ describe('StatusRule credits notice render priority', () => {
+@@ -351,14 +363,16 @@ describe('StatusRule credits notice render priority', () => {
          return null
        }
  
@@ -3177,7 +3203,7 @@ index ec13205649..487013c253 100644
      }
  
      const shrinkBox = findShrinkBoxContaining(element)
-@@ -419,7 +432,7 @@ describe('StatusRule idle-since read-out', () => {
+@@ -419,7 +433,7 @@ describe('StatusRule idle-since read-out', () => {
    // The IdleSince component uses hooks, so it can't be invoked outside a
    // renderer — assert on the element tree instead (same reason the duration
    // tests don't check SessionDuration's text).
@@ -3186,7 +3212,7 @@ index ec13205649..487013c253 100644
      if (node === null || node === undefined || typeof node === 'boolean') {
        return null
      }
-@@ -440,11 +453,13 @@ describe('StatusRule idle-since read-out', () => {
+@@ -440,11 +454,13 @@ describe('StatusRule idle-since read-out', () => {
        return null
      }
  
@@ -3821,7 +3847,7 @@ index 0000000000..abb1f1485f
 +})
 diff --git a/ui-tui/src/__tests__/waterPulse.test.ts b/ui-tui/src/__tests__/waterPulse.test.ts
 new file mode 100644
-index 0000000000..cbc27e2455
+index 0000000000..09e8049cec
 --- /dev/null
 +++ b/ui-tui/src/__tests__/waterPulse.test.ts
 @@ -0,0 +1,142 @@
@@ -3859,10 +3885,10 @@ index 0000000000..cbc27e2455
 +
 +  it('keeps one render cadence while TPS changes phase velocity', () => {
 +    expect(WATER_FRAME_MS).toBe(60)
-+    expect(waterFrameStep(-5)).toBeCloseTo(4 / 3)
-+    expect(waterFrameStep(0)).toBeCloseTo(4 / 3)
-+    expect(waterFrameStep(15)).toBe(2)
-+    expect(waterFrameStep(200)).toBe(2)
++    expect(waterFrameStep(-5)).toBe(2)
++    expect(waterFrameStep(0)).toBe(2)
++    expect(waterFrameStep(15)).toBe(3)
++    expect(waterFrameStep(200)).toBe(3)
 +  })
 +
 +  it('is deterministic per frame and advances with the frame', () => {
@@ -4334,7 +4360,7 @@ index 0000000000..6f960d3fc5
 +  $wavePulse.set($wavePulse.get() + 1)
 +}
 diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
-index 93da0fdaed..3a646475d7 100644
+index 93da0fdaed..f3da183ed6 100644
 --- a/ui-tui/src/components/appChrome.tsx
 +++ b/ui-tui/src/components/appChrome.tsx
 @@ -6,7 +6,9 @@ import unicodeSpinners from 'unicode-animations'
@@ -4402,13 +4428,13 @@ index 93da0fdaed..3a646475d7 100644
 +export const WATER_FRAME_MS = 60
 +
 +// Keep Ink on one stable repaint cadence. TPS changes phase velocity instead
-+// of tearing down and re-arming the interval whenever the EMA moves. These
-+// steps preserve the old visual speed: 45ms/frame at zero TPS and 30ms/frame
-+// from 15 t/s upward, expressed as fractional frames on the 60ms clock.
++// of tearing down and re-arming the interval whenever the EMA moves. The wave
++// advances at an effective 30ms/frame at zero TPS and 20ms/frame from 15 t/s
++// upward, expressed as fractional frames on the 60ms clock.
 +export const waterFrameStep = (tps: number): number => {
 +  const clampedTps = Math.min(Math.max(tps, 0), 15)
 +
-+  return WATER_FRAME_MS / (45 - clampedTps)
++  return WATER_FRAME_MS / (30 - (clampedTps * 2) / 3)
 +}
 +
 +// A seeded, correlated field gives each impact a slightly different texture
@@ -4798,7 +4824,7 @@ index 93da0fdaed..3a646475d7 100644
    modelFast,
    modelReasoningEffort,
    indicatorStyle = 'kaomoji',
-@@ -502,10 +911,167 @@ export function StatusRule({
+@@ -502,10 +911,160 @@ export function StatusRule({
        : ''
  
    const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
@@ -4837,7 +4863,6 @@ index 93da0fdaed..3a646475d7 100644
 +
 +    const showFixedBattery = !!battery && battery.available && battery.percent != null
 +    const showFixedNotice = !busy && !!notice?.text
-+    const showFixedStatus = cols < 72 && !busy && !showFixedNotice
 +    const showFixedIdle = cols >= 76 && !busy && lastTurnEndedAt != null
 +    const showFixedSessionCount = cols >= 76 && !!fixedSessionCountText
 +    const showFixedSubagents = cols >= 92 && fixedSubagentCount > 0
@@ -4871,12 +4896,6 @@ index 93da0fdaed..3a646475d7 100644
 +          <Box flexShrink={0} width={WATER_CELL_COUNT}>
 +            <WaterTicker busy={busy} />
 +          </Box>
-+          {showFixedStatus ? (
-+            <Text color={statusColor} wrap="truncate-end">
-+              {' │ '}
-+              {status}
-+            </Text>
-+          ) : null}
 +          {showFixedNotice ? (
 +            <Box flexDirection="row" flexShrink={1} overflow="hidden">
 +              <Text color={noticeColor(notice!.level, t)} wrap="truncate-end">
@@ -4968,7 +4987,7 @@ index 93da0fdaed..3a646475d7 100644
    const batteryText = showBattery ? batteryLabel(battery!) : ''
    const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
    const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
-@@ -563,7 +1129,7 @@ export function StatusRule({
+@@ -563,7 +1122,7 @@ export function StatusRule({
    }
  
    const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
@@ -4977,7 +4996,7 @@ index 93da0fdaed..3a646475d7 100644
  
    // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
    // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
-@@ -571,11 +1137,12 @@ export function StatusRule({
+@@ -571,11 +1130,12 @@ export function StatusRule({
    // raises remaining nets a negative Δ (honest).
    const devCreditsText =
      typeof usage.dev_credits_spent_micros === 'number'
@@ -4991,7 +5010,7 @@ index 93da0fdaed..3a646475d7 100644
  
    // Idle clock — time since the last final agent response. Hidden while busy
    // (the FaceTicker's elapsed tail covers the live turn) and before the first
-@@ -584,10 +1151,10 @@ export function StatusRule({
+@@ -584,10 +1144,10 @@ export function StatusRule({
      segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
  
    const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
@@ -5004,7 +5023,7 @@ index 93da0fdaed..3a646475d7 100644
    const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
  
    // Parked-background reassurance: a top-level delegate_task runs in the
-@@ -672,6 +1239,7 @@ export function StatusRule({
+@@ -672,6 +1232,7 @@ export function StatusRule({
                {ctxLabel}
              </Text>
            ) : null}
@@ -5012,7 +5031,7 @@ index 93da0fdaed..3a646475d7 100644
          </Box>
          {showFocus ? (
            <Box flexDirection="row" flexShrink={0}>
-@@ -870,6 +1438,7 @@ interface StatusRuleProps {
+@@ -870,6 +1431,7 @@ interface StatusRuleProps {
    cols: number
    cwdLabel: string
    model: string
