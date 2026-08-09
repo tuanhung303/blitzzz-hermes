@@ -1,0 +1,531 @@
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index dc583c7529..d3367ed2db 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -162,6 +162,26 @@ HERMES_AGENT_HELP_GUIDANCE = (
+     "of truth when the two differ."
+ )
+ 
++INTERACTIVE_EXECUTION_BUDGET_GUIDANCE = (
++    "# Interactive Execution Budget\n"
++    "- **Estimate before execution.** Before starting a command, estimate its runtime. "
++    "Do not blindly start work with a reasonable chance of exceeding 10 minutes.\n"
++    "- **Runtime escalation.** If a command unexpectedly crosses its expected runtime "
++    "or budget threshold, stop it where safely possible instead of merely allowing it "
++    "to continue.\n"
++    "- **Progress matters.** Prefer observable progress over silent waiting. A 15-minute "
++    "job with clear progress may be acceptable as an explicit background batch job; a "
++    "5-minute command with no output may warrant stopping and redesign.\n"
++    "\n"
++    "Practical policy:\n"
++    "- Actions should normally complete within 3 minutes.\n"
++    "- Actions expected to exceed 3 minutes should be optimized or replaced where practical.\n"
++    "- Actions expected to exceed 10 minutes require a faster alternative or explicit "
++    "justification before execution.\n"
++    "- Actions expected to exceed 30 minutes must not run synchronously in the agent "
++    "session; use a monitored background or external batch job."
++)
++
+ MEMORY_GUIDANCE = (
+     "You have persistent memory across sessions. Save durable facts using the memory "
+     "tool: user preferences, environment details, tool quirks, and stable conventions. "
+diff --git a/agent/system_prompt.py b/agent/system_prompt.py
+index 5d40592242..4c79559590 100644
+--- a/agent/system_prompt.py
++++ b/agent/system_prompt.py
+@@ -34,6 +34,7 @@ from agent.prompt_builder import (
+     DEFAULT_AGENT_IDENTITY,
+     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+     HERMES_AGENT_HELP_GUIDANCE,
++    INTERACTIVE_EXECUTION_BUDGET_GUIDANCE,
+     KANBAN_GUIDANCE,
+     MEMORY_GUIDANCE,
+     OPENAI_MODEL_EXECUTION_GUIDANCE,
+@@ -203,6 +204,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
+     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
+     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+ 
++    # Universal execution budget. This is deliberately in the stable global
++    # prompt rather than project context or memory so every model/session sees
++    # the same thresholds, including isolated swarm workers.
++    stable_parts.append(INTERACTIVE_EXECUTION_BUDGET_GUIDANCE)
++
+     # Universal task-completion / no-fabrication guidance.  Applied to ALL
+     # models regardless of tool_use_enforcement gating — the failure modes
+     # this targets (stopping after a stub; fabricating output when a real
+diff --git a/tests/tools/test_terminal_foreground_timeout_cap.py b/tests/tools/test_terminal_foreground_timeout_cap.py
+index 0081de88a5..17a8f47e53 100644
+--- a/tests/tools/test_terminal_foreground_timeout_cap.py
++++ b/tests/tools/test_terminal_foreground_timeout_cap.py
+@@ -90,13 +90,9 @@ class TestForegroundTimeoutCap:
+         assert call_kwargs[0][0] == "pnpm dev --help"
+ 
+ 
+-    def test_config_default_above_cap_not_rejected(self):
+-        """When config default timeout > cap but model passes no timeout, execute normally.
+-
+-        Only the model's explicit timeout parameter triggers rejection,
+-        not the user's configured default.
+-        """
+-        from tools.terminal_tool import terminal_tool
++    def test_config_default_above_cap_is_clamped_not_rejected(self):
++        """A configured default cannot bypass the synchronous safety ceiling."""
++        from tools.terminal_tool import terminal_tool, FOREGROUND_MAX_TIMEOUT
+ 
+         # User configured TERMINAL_TIMEOUT=900 in their env
+         with patch("tools.terminal_tool._get_env_config",
+@@ -111,10 +107,11 @@ class TestForegroundTimeoutCap:
+                  patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+                 result = json.loads(terminal_tool(command="make build"))
+ 
+-        # Should execute with the config default, NOT be rejected
++        # The command still executes, but the configured default is clamped.
+         call_kwargs = mock_env.execute.call_args
+-        assert call_kwargs[1]["timeout"] == 900
++        assert call_kwargs[1]["timeout"] == FOREGROUND_MAX_TIMEOUT
+         assert "error" not in result or result["error"] is None
++        assert result["runtime_timeout_note"]
+ 
+ 
+     def test_exactly_at_max_not_rejected(self):
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+index f3ffe03466..3583ceeb96 100644
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -338,6 +338,16 @@ def format_uptime_short(seconds: int) -> str:
+     return f"{hours}h {mins}m"
+ 
+ 
++def _runtime_metadata_for_session(
++    session: "ProcessSession", *, progress_observed: bool
++) -> dict:
++    """Return elapsed-runtime advice for a tracked background session."""
++    from tools.runtime_budget import runtime_metadata
++
++    elapsed = time.time() - session.started_at if session.started_at else 0.0
++    return runtime_metadata(elapsed, progress_observed=progress_observed)
++
++
+ @dataclass
+ class ProcessSession:
+     """A tracked background process with output buffering."""
+@@ -1813,6 +1823,11 @@ class ProcessRegistry:
+             "uptime_seconds": int(time.time() - session.started_at),
+             "output_preview": output_preview,
+         }
++        result.update(
++            _runtime_metadata_for_session(
++                session, progress_observed=bool(output_preview.strip())
++            )
++        )
+         if session.exited:
+             result["exit_code"] = session.exit_code
+             result["completion_reason"] = session.completion_reason
+@@ -1866,6 +1881,11 @@ class ProcessRegistry:
+             "total_lines": total_lines,
+             "showing": f"{len(selected)} lines",
+         }
++        result.update(
++            _runtime_metadata_for_session(
++                session, progress_observed=bool(full_output.strip())
++            )
++        )
+         if session.exited and observed_completion_output:
+             self._completion_consumed.add(session_id)
+         return result
+@@ -1926,6 +1946,11 @@ class ProcessRegistry:
+                     "termination_source": session.termination_source,
+                     "output": strip_ansi(session.output_buffer[-2000:]),
+                 }
++                result.update(
++                    _runtime_metadata_for_session(
++                        session, progress_observed=bool(session.output_buffer.strip())
++                    )
++                )
+                 if timeout_note:
+                     result["timeout_note"] = timeout_note
+                 return result
+@@ -1937,6 +1962,11 @@ class ProcessRegistry:
+                     "output": strip_ansi(session.output_buffer[-1000:]),
+                     "note": "User sent a new message -- wait interrupted",
+                 }
++                result.update(
++                    _runtime_metadata_for_session(
++                        session, progress_observed=bool(session.output_buffer.strip())
++                    )
++                )
+                 if timeout_note:
+                     result["timeout_note"] = timeout_note
+                 return result
+@@ -1955,6 +1985,11 @@ class ProcessRegistry:
+             # identical waits after misreading this result as an error.
+             "process_running": True,
+         }
++        result.update(
++            _runtime_metadata_for_session(
++                session, progress_observed=bool(session.output_buffer.strip())
++            )
++        )
+         uptime = time.time() - session.started_at if session.started_at else None
+         base_note = (
+             f"Wait window of {effective_timeout}s elapsed — the process is "
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index f9dd09114f..85951ff787 100644
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -1079,8 +1079,8 @@ TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Fi
+ Do NOT use cat/head/tail (use read_file), grep/rg/find/ls (use search_files), sed/awk (use patch), or echo/heredoc file creation (use write_file). Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
+ Environment state persists: activate a virtualenv or export variables once per session, not before every command.
+ 
+-Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds.
+-Background: set background=true (returns a session_id). Pair with notify_on_complete=true for bounded tasks; leave silent only for servers/daemons that never exit. Never use nohup/setsid/trailing '&' — use background=true so Hermes tracks the process. After starting a server, verify readiness with a health check, then act in a separate call; no blind sleep loops. Manage with process(action="poll"/"wait").
++Estimate runtime before execution. Foreground (default) should normally finish within 3 minutes and is hard-capped at 10 minutes; use a faster approach or explicit justification before starting work expected to exceed 10 minutes.
++Background: set background=true (returns a session_id) for explicit batch work so progress stays observable. Pair with notify_on_complete=true for bounded tasks; leave silent only for servers/daemons that never exit. Never use nohup/setsid/trailing '&' — use background=true so Hermes tracks the process. After starting a server, verify readiness with a health check, then act in a separate call; no blind sleep loops. Manage with process(action="poll"/"wait").
+ Working directory: use 'workdir' for per-command cwd. When a command changes the session cwd (cd, pushd), the result includes a "cwd" field — trust it instead of prefixing every command with 'cd'.
+ PTY: set pty=true for interactive CLIs (they hang without it). Pipe git output to cat if it might page.
+ """
+@@ -2470,6 +2470,7 @@ def terminal_tool(
+                 f"timeout must be a positive number of seconds (got {timeout})."
+             )
+         effective_timeout = timeout or default_timeout
++        runtime_timeout_note = None
+ 
+         # Reject foreground commands where the model explicitly requests
+         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
+@@ -2480,6 +2481,16 @@ def terminal_tool(
+                 f"notify_on_complete=true for long-running commands."
+             )
+ 
++        # A configured default must not bypass the synchronous ceiling. An
++        # unexpectedly long foreground command is safely stopped by the
++        # environment timeout; explicit batch work belongs in background mode.
++        if not background and effective_timeout > FOREGROUND_MAX_TIMEOUT:
++            runtime_timeout_note = (
++                f"Configured foreground timeout {effective_timeout}s was clamped "
++                f"to the safe synchronous limit of {FOREGROUND_MAX_TIMEOUT}s."
++            )
++            effective_timeout = FOREGROUND_MAX_TIMEOUT
++
+         # Guardrail: long-lived server/watch commands should run as managed
+         # background sessions, not foreground shell hacks.
+         if not background:
+@@ -3052,6 +3063,7 @@ def terminal_tool(
+             retry_count = 0
+             result = None
+             command_cwd = None
++            execution_started_at = time.monotonic()
+ 
+             # Clean interrupt slate for an approved command, ONCE before the
+             # retry loop: drop a stale bit that landed on this thread during the
+@@ -3084,11 +3096,16 @@ def terminal_tool(
+                 except Exception as e:
+                     error_str = str(e).lower()
+                     if "timeout" in error_str:
+-                        return json.dumps({
++                        error_result = {
+                             "output": "",
+                             "exit_code": 124,
+                             "error": f"Command timed out after {effective_timeout} seconds"
+-                        }, ensure_ascii=False)
++                        }
++                        from tools.runtime_budget import runtime_metadata
++                        error_result.update(runtime_metadata(time.monotonic() - execution_started_at))
++                        if runtime_timeout_note:
++                            error_result["runtime_timeout_note"] = runtime_timeout_note
++                        return json.dumps(error_result, ensure_ascii=False)
+                     
+                     # Retry on transient errors
+                     if retry_count < max_retries:
+@@ -3101,13 +3118,18 @@ def terminal_tool(
+                     
+                     logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
+                                  max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
+-                    return json.dumps({
++                    error_result = {
+                         "output": "",
+                         "exit_code": -1,
+                         "error": _redact_terminal_error_text(
+                             f"Command execution failed: {type(e).__name__}: {e}"
+                         )
+-                    }, ensure_ascii=False)
++                    }
++                    from tools.runtime_budget import runtime_metadata
++                    error_result.update(runtime_metadata(time.monotonic() - execution_started_at))
++                    if runtime_timeout_note:
++                        error_result["runtime_timeout_note"] = runtime_timeout_note
++                    return json.dumps(error_result, ensure_ascii=False)
+                 
+                 # Got a result
+                 break
+@@ -3224,6 +3246,10 @@ def terminal_tool(
+                 "exit_code": returncode,
+                 "error": None,
+             }
++            from tools.runtime_budget import runtime_metadata
++            result_dict.update(runtime_metadata(time.monotonic() - execution_started_at))
++            if runtime_timeout_note:
++                result_dict["runtime_timeout_note"] = runtime_timeout_note
+             # cwd echo: when the command changed the session's working
+             # directory (cd, pushd, ...), tell the model where it ended up.
+             # Production mining shows 60% of terminal calls carry a
+diff --git a/tools/runtime_budget.py b/tools/runtime_budget.py
+new file mode 100644
+index 0000000000..6c61185493
+--- /dev/null
++++ b/tools/runtime_budget.py
+@@ -0,0 +1,68 @@
++"""Runtime-budget classifications shared by terminal and process tools.
++
++The terminal surface returns one concise advisory for the observed runtime
++instead of repeating the whole policy table in every tool result. Background
++process reads additionally report whether any output has been observed, which
++lets the agent distinguish productive batch work from a silent possible stall.
++"""
++
++from __future__ import annotations
++
++from typing import Optional
++
++
++RUNTIME_ADVICES: tuple[str, ...] = (
++    "<1 min: Healthy — continue normally.",
++    "1–3 min: Acceptable — continue, but monitor runtime.",
++    "3–10 min: Next iteration, consider reducing scope, sampling, or optimizing.",
++    "10–30 min: Next iteration, avoid repeating this approach; verify a faster alternative first.",
++    ">30 min: Do not repeat interactively; redesign the approach or use a batch job.",
++)
++
++
++def runtime_advice_for_seconds(elapsed_seconds: float) -> str:
++    """Return the advisory bucket for a non-negative observed runtime."""
++    elapsed = max(0.0, float(elapsed_seconds))
++    if elapsed < 60:
++        return RUNTIME_ADVICES[0]
++    if elapsed < 180:
++        return RUNTIME_ADVICES[1]
++    if elapsed < 600:
++        return RUNTIME_ADVICES[2]
++    if elapsed < 1800:
++        return RUNTIME_ADVICES[3]
++    return RUNTIME_ADVICES[4]
++
++
++def runtime_metadata(
++    elapsed_seconds: float,
++    *,
++    progress_observed: Optional[bool] = None,
++) -> dict:
++    """Build low-noise runtime metadata for a terminal/process response.
++
++    ``progress_observed`` is omitted for synchronous terminal results because
++    their output only becomes visible when the command returns. Background
++    process reads pass a real output-observed signal.
++    """
++    elapsed = max(0.0, float(elapsed_seconds))
++    metadata = {
++        "runtime_seconds": round(elapsed, 2),
++        "runtime_advice": runtime_advice_for_seconds(elapsed),
++    }
++    if progress_observed is None:
++        return metadata
++
++    metadata["progress_observed"] = bool(progress_observed)
++    if elapsed >= 180:
++        if progress_observed:
++            metadata["progress_advice"] = (
++                "Observable output exists; this can remain an explicit batch job, "
++                "but continue monitoring runtime and progress."
++            )
++        else:
++            metadata["progress_advice"] = (
++                "No output has been observed; treat this as a possible stall and "
++                "stop it safely if practical before redesigning the approach."
++            )
++    return metadata
+diff --git a/tests/agent/test_execution_budget_prompt.py b/tests/agent/test_execution_budget_prompt.py
+new file mode 100644
+index 0000000000..652505856c
+--- /dev/null
++++ b/tests/agent/test_execution_budget_prompt.py
+@@ -0,0 +1,50 @@
++"""The execution budget is part of every Hermes system prompt."""
++
++from unittest.mock import MagicMock, patch
++
++from agent.prompt_builder import INTERACTIVE_EXECUTION_BUDGET_GUIDANCE
++from run_agent import AIAgent
++
++
++def _tool_defs(*names: str) -> list[dict]:
++    return [
++        {
++            "type": "function",
++            "function": {
++                "name": name,
++                "description": f"{name} tool",
++                "parameters": {"type": "object", "properties": {}},
++            },
++        }
++        for name in names
++    ]
++
++
++def test_budget_guidance_contains_policy_contract():
++    text = INTERACTIVE_EXECUTION_BUDGET_GUIDANCE.lower()
++
++    assert "estimate before execution" in text
++    assert "runtime escalation" in text
++    assert "progress matters" in text
++    assert "3 minutes" in text
++    assert "10 minutes" in text
++    assert "30 minutes" in text
++    assert "synchronously" in text
++
++
++def test_budget_guidance_is_in_global_system_prompt():
++    with (
++        patch("run_agent.get_tool_definitions", return_value=_tool_defs("terminal")),
++        patch("run_agent.check_toolset_requirements", return_value={}),
++        patch("run_agent.OpenAI"),
++    ):
++        agent = AIAgent(
++            api_key="test-key-1234567890",
++            base_url="https://openrouter.ai/api/v1",
++            quiet_mode=True,
++            skip_context_files=True,
++            skip_memory=True,
++        )
++        agent.client = MagicMock()
++
++    assert INTERACTIVE_EXECUTION_BUDGET_GUIDANCE in agent._build_system_prompt()
+diff --git a/tests/tools/test_runtime_budget.py b/tests/tools/test_runtime_budget.py
+new file mode 100644
+index 0000000000..f2a5999131
+--- /dev/null
++++ b/tests/tools/test_runtime_budget.py
+@@ -0,0 +1,62 @@
++"""Contracts for interactive execution-budget guidance and runtime advice."""
++
++import time
++
++import pytest
++
++from tools.process_registry import ProcessRegistry, ProcessSession
++from tools.runtime_budget import (
++    RUNTIME_ADVICES,
++    runtime_advice_for_seconds,
++    runtime_metadata,
++)
++
++
++@pytest.mark.parametrize(
++    ("seconds", "expected_index"),
++    [
++        (0, 0),
++        (59.999, 0),
++        (60, 1),
++        (179.999, 1),
++        (180, 2),
++        (599.999, 2),
++        (600, 3),
++        (1799.999, 3),
++        (1800, 4),
++    ],
++)
++def test_runtime_advice_thresholds(seconds, expected_index):
++    assert runtime_advice_for_seconds(seconds) == RUNTIME_ADVICES[expected_index]
++
++
++def test_runtime_metadata_flags_silent_long_work_as_possible_stall():
++    metadata = runtime_metadata(301, progress_observed=False)
++
++    assert metadata["runtime_seconds"] == 301
++    assert metadata["progress_observed"] is False
++    assert "possible stall" in metadata["progress_advice"].lower()
++
++
++def test_runtime_metadata_accepts_observable_batch_progress():
++    metadata = runtime_metadata(901, progress_observed=True)
++
++    assert metadata["progress_observed"] is True
++    assert "continue monitoring" in metadata["progress_advice"].lower()
++
++
++def test_background_poll_returns_runtime_advice_and_progress_signal():
++    registry = ProcessRegistry()
++    session = ProcessSession(
++        id="proc_budget",
++        command="batch-job",
++        started_at=time.time() - 601,
++        output_buffer="step 3 of 10",
++    )
++    registry._running[session.id] = session
++
++    result = registry.poll(session.id)
++
++    assert result["runtime_advice"] == RUNTIME_ADVICES[3]
++    assert result["progress_observed"] is True
++    assert "continue monitoring" in result["progress_advice"].lower()
+diff --git a/tests/tools/test_terminal_runtime_budget.py b/tests/tools/test_terminal_runtime_budget.py
+new file mode 100644
+index 0000000000..ce5a437020
+--- /dev/null
++++ b/tests/tools/test_terminal_runtime_budget.py
+@@ -0,0 +1,57 @@
++"""Terminal integration contracts for execution-budget metadata and caps."""
++
++import json
++from unittest.mock import MagicMock, patch
++
++
++def _env_config(**overrides):
++    config = {
++        "env_type": "local",
++        "timeout": 180,
++        "cwd": "/tmp",
++        "host_cwd": None,
++        "modal_mode": "auto",
++        "docker_image": "",
++        "singularity_image": "",
++        "modal_image": "",
++        "daytona_image": "",
++    }
++    config.update(overrides)
++    return config
++
++
++def _run_with_mock_env(*, config_timeout=180):
++    from tools.terminal_tool import terminal_tool
++
++    env = MagicMock()
++    env.cwd = "/tmp"
++    env.execute.return_value = {"output": "done", "returncode": 0}
++    with (
++        patch("tools.terminal_tool._get_env_config", return_value=_env_config(timeout=config_timeout)),
++        patch("tools.terminal_tool._start_cleanup_thread"),
++        patch("tools.terminal_tool._active_environments", {"default": env}),
++        patch("tools.terminal_tool._last_activity", {"default": 0}),
++        patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}),
++    ):
++        result = json.loads(terminal_tool(command="echo done"))
++    return env, result
++
++
++def test_foreground_terminal_returns_runtime_advice():
++    _env, result = _run_with_mock_env()
++
++    assert result["runtime_seconds"] >= 0
++    assert result["runtime_advice"].startswith("<1 min: Healthy")
++
++
++def test_configured_foreground_timeout_is_safely_clamped_to_ten_minutes():
++    from tools.terminal_tool import FOREGROUND_MAX_TIMEOUT
++
++    env, result = _run_with_mock_env(config_timeout=3600)
++
++    assert result["error"] is None
++    assert env.execute.call_args.kwargs["timeout"] == FOREGROUND_MAX_TIMEOUT
++    assert result["runtime_timeout_note"] == (
++        f"Configured foreground timeout 3600s was clamped to the safe synchronous "
++        f"limit of {FOREGROUND_MAX_TIMEOUT}s."
++    )

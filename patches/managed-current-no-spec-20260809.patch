@@ -13,10 +13,10 @@ index 283c8a9164..cc452d4859 100644
  tests/quick_test_dataset.jsonl
  tests/sample_dataset.jsonl
 diff --git a/agent/agent_init.py b/agent/agent_init.py
-index 6f89ed237d..e2045626a2 100644
+index 428dc69c8b..3af5b8b79b 100644
 --- a/agent/agent_init.py
 +++ b/agent/agent_init.py
-@@ -1684,13 +1684,24 @@ def init_agent(
+@@ -1703,13 +1703,24 @@ def init_agent(
              agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
              if agent._memory_enabled or agent._user_profile_enabled:
                  from tools.memory_tool import MemoryStore
@@ -45,7 +45,7 @@ index 6f89ed237d..e2045626a2 100644
      
  
  
-@@ -1848,6 +1859,7 @@ def init_agent(
+@@ -1867,6 +1878,7 @@ def init_agent(
      _compression_cfg = _agent_cfg.get("compression", {})
      if not isinstance(_compression_cfg, dict):
          _compression_cfg = {}
@@ -53,7 +53,7 @@ index 6f89ed237d..e2045626a2 100644
      compression_threshold = float(_compression_cfg.get("threshold", 0.50))
      # Per-model/route compaction-threshold override. Codex gpt-5.4 / gpt-5.5
      # raise to 85% (the Codex backend caps both families at 272K, so the
-@@ -2504,6 +2516,7 @@ def init_agent(
+@@ -2544,6 +2556,7 @@ def init_agent(
              _bind_session_state(session_db=session_db, session_id=agent.session_id)
          except Exception:
              pass
@@ -62,10 +62,10 @@ index 6f89ed237d..e2045626a2 100644
      agent.compression_in_place = compression_in_place
      # Apply micro-compaction settings to the compressor (feature is opt-in)
 diff --git a/agent/agent_runtime_helpers.py b/agent/agent_runtime_helpers.py
-index 062549ed7f..d47d135426 100644
+index e64fd9ad72..033eeeac72 100644
 --- a/agent/agent_runtime_helpers.py
 +++ b/agent/agent_runtime_helpers.py
-@@ -2693,6 +2693,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
+@@ -2703,6 +2703,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
              api_mode=agent.api_mode,
          )
  
@@ -74,10 +74,10 @@ index 062549ed7f..d47d135426 100644
      # The new model may have a different reasoning_effort override. Re-read
      # config so the override takes effect immediately on /model switch —
 diff --git a/agent/chat_completion_helpers.py b/agent/chat_completion_helpers.py
-index 313e7cd865..382c0220ed 100644
+index 7e07aea731..18b8dfb034 100644
 --- a/agent/chat_completion_helpers.py
 +++ b/agent/chat_completion_helpers.py
-@@ -2158,6 +2158,19 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+@@ -2347,6 +2347,19 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
              agent._copy_reasoning_content_for_api(msg, api_msg)
              for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                  api_msg.pop(internal_field, None)
@@ -98,7 +98,7 @@ index 313e7cd865..382c0220ed 100644
              # Mistral, Moonshot/Kimi) reject any message key outside the Chat
              # Completions schema. The main loop drops these via
 diff --git a/agent/codex_runtime.py b/agent/codex_runtime.py
-index c01084c4a4..469a5e1203 100644
+index f36f1c78fe..43fe8946fb 100644
 --- a/agent/codex_runtime.py
 +++ b/agent/codex_runtime.py
 @@ -229,7 +229,20 @@ def _record_codex_app_server_compaction(
@@ -142,7 +142,7 @@ index c01084c4a4..469a5e1203 100644
      * ``on_commentary_message(str)`` — fires once per completed
        ``phase=commentary`` message, before any following tool item executes.
      * ``on_first_delta()`` — one-shot, fires on the first text delta only.
-@@ -1083,6 +1101,11 @@ def _consume_codex_event_stream(
+@@ -1087,6 +1105,11 @@ def _consume_codex_event_stream(
              delta_text = _event_field(event, "delta", "")
              if delta_text and active_message_phase == "commentary":
                  commentary_text_deltas.append(delta_text)
@@ -154,7 +154,7 @@ index c01084c4a4..469a5e1203 100644
                  # Preserve CLI/backward compatibility when no first-class
                  # commentary consumer is installed.
                  if on_commentary_message is None and on_reasoning_delta is not None:
-@@ -1253,6 +1276,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
+@@ -1268,6 +1291,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
      def _on_reasoning_delta(text: str) -> None:
          agent._fire_reasoning_delta(text)
  
@@ -164,7 +164,7 @@ index c01084c4a4..469a5e1203 100644
      def _on_commentary_message(text: str) -> None:
          agent._fire_streamed_codex_commentary(text)
  
-@@ -1353,6 +1379,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
+@@ -1368,6 +1394,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                      model=api_kwargs.get("model"),
                      on_text_delta=_on_text_delta,
                      on_reasoning_delta=_on_reasoning_delta,
@@ -173,10 +173,10 @@ index c01084c4a4..469a5e1203 100644
                          _on_commentary_message
                          if (
 diff --git a/agent/context_compressor.py b/agent/context_compressor.py
-index 59ae723d2b..03996b3de4 100644
+index 3bc40b7a84..1834d28b3c 100644
 --- a/agent/context_compressor.py
 +++ b/agent/context_compressor.py
-@@ -393,6 +393,7 @@ _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES = 3
+@@ -511,6 +511,7 @@ _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES = 3
  # call (see the no-wire-cap contract test in
  # test_compression_small_ctx_threshold_floor.py).
  _SUMMARY_INPUT_MAX_CHARS = 160_000
@@ -184,7 +184,7 @@ index 59ae723d2b..03996b3de4 100644
  
  # Placeholder used when pruning old tool results
  _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
-@@ -3205,22 +3206,14 @@ class ContextCompressor(ContextEngine):
+@@ -3622,22 +3623,14 @@ class ContextCompressor(ContextEngine):
          turns_to_summarize: List[Dict[str, Any]],
          reason: str | None = None,
      ) -> str:
@@ -209,7 +209,7 @@ index 59ae723d2b..03996b3de4 100644
  
          def _compact_fallback_turn(value: Any) -> str:
              text = _redact_compaction_text(_content_text_for_contains(value))
-@@ -3266,7 +3259,7 @@ class ContextCompressor(ContextEngine):
+@@ -3683,7 +3676,7 @@ class ContextCompressor(ContextEngine):
                              parsed = args
                          _collect_paths_from_jsonish(parsed)
  
@@ -218,7 +218,7 @@ index 59ae723d2b..03996b3de4 100644
              role = msg.get("role", "unknown")
              text = _compact_fallback_turn(msg.get("content"))
              _collect_path_mentions(text, relevant_files)
-@@ -3290,6 +3283,7 @@ class ContextCompressor(ContextEngine):
+@@ -3707,6 +3700,7 @@ class ContextCompressor(ContextEngine):
                  text = text[:420].rstrip() + " ... " + text[-160:].lstrip()
  
              if role == "user" and text and not synthetic_user:
@@ -226,7 +226,7 @@ index 59ae723d2b..03996b3de4 100644
                  user_asks.append(text)
              elif role == "assistant":
                  tool_names: list[str] = []
-@@ -3297,22 +3291,14 @@ class ContextCompressor(ContextEngine):
+@@ -3714,22 +3708,14 @@ class ContextCompressor(ContextEngine):
                      name, _args = _extract_tool_call_name_and_args(tc)
                      tool_names.append(name)
                  if tool_names:
@@ -252,7 +252,7 @@ index 59ae723d2b..03996b3de4 100644
                      blockers.append(text[:500])
  
          def _bullets(items: list[str], limit: int = 8) -> str:
-@@ -3328,112 +3314,142 @@ class ContextCompressor(ContextEngine):
+@@ -3745,112 +3731,142 @@ class ContextCompressor(ContextEngine):
                      break
              return "\n".join(f"- {item}" for item in unique) if unique else "None."
  
@@ -454,7 +454,7 @@ index 59ae723d2b..03996b3de4 100644
  
      def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
          """Switch from a separate ``summary_model`` back to the main model.
-@@ -3471,24 +3487,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
+@@ -3888,24 +3904,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
          turns_to_summarize: List[Dict[str, Any]],
          focus_topic: Optional[str] = None,
          memory_context: str = "",
@@ -481,7 +481,7 @@ index 59ae723d2b..03996b3de4 100644
          now = time.monotonic()
          if now < self._summary_failure_cooldown_until:
              logger.debug(
-@@ -3497,10 +3498,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
+@@ -3914,10 +3915,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
              )
              return None
  
@@ -492,7 +492,7 @@ index 59ae723d2b..03996b3de4 100644
          if focus_topic:
              focus_topic = _redact_compaction_text(focus_topic)
          if self._previous_summary:
-@@ -3508,23 +3505,38 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
+@@ -3925,23 +3922,38 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
  
          summary_budget = self._compute_summary_budget(turns_to_summarize)
          content_to_summarize = self._serialize_for_summary(turns_to_summarize)
@@ -542,7 +542,7 @@ index 59ae723d2b..03996b3de4 100644
          _sanitized_memory_context = sanitize_memory_context(memory_context)
          _serialized_memory_context = json.dumps(
              _sanitized_memory_context,
-@@ -3537,9 +3549,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
+@@ -3954,9 +3966,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
          )
          _memory_section = (
              "\n\nMEMORY PROVIDER CONTEXT:\n"
@@ -556,7 +556,7 @@ index 59ae723d2b..03996b3de4 100644
              f"<memory-provider-context>\n{_serialized_memory_context}\n"
              "</memory-provider-context>"
              if _sanitized_memory_context
-@@ -3549,12 +3562,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
+@@ -3966,12 +3979,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
          if has_user_turn is None:
              has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)
  
@@ -569,7 +569,7 @@ index 59ae723d2b..03996b3de4 100644
          try:
              from hermes_time import now as _hermes_now
  
-@@ -3562,51 +3569,17 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
+@@ -3979,51 +3986,17 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
          except Exception:  # pragma: no cover - clock resolution is best-effort
              _today_str = ""
  
@@ -627,7 +627,7 @@ index 59ae723d2b..03996b3de4 100644
          else:
              _language_and_provenance_rule = (
                  "This session contains no user-authored turns. Write the summary "
-@@ -3619,148 +3592,113 @@ If no outstanding task exists, write "None."]"""
+@@ -4036,148 +4009,113 @@ If no outstanding task exists, write "None."]"""
  {_NO_USER_TASK_SENTINEL}
  Do not write "User asked:" or any translated equivalent anywhere in the summary.
  Describe agent/tool work only as completed actions, state, or historical work.]"""
@@ -843,7 +843,7 @@ index 59ae723d2b..03996b3de4 100644
  
          try:
              call_kwargs = {
-@@ -3981,6 +3919,7 @@ This compaction should PRIORITISE preserving all information related to the focu
+@@ -4398,6 +4336,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                      turns_to_summarize,
                      focus_topic=focus_topic,
                      memory_context=memory_context,
@@ -851,7 +851,7 @@ index 59ae723d2b..03996b3de4 100644
                  )  # retry immediately
  
              # Unknown-error best-effort retry on main model.  Losing N turns of
-@@ -4002,6 +3941,7 @@ This compaction should PRIORITISE preserving all information related to the focu
+@@ -4419,6 +4358,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                      turns_to_summarize,
                      focus_topic=focus_topic,
                      memory_context=memory_context,
@@ -859,7 +859,7 @@ index 59ae723d2b..03996b3de4 100644
                  )
  
              # Transient errors (timeout, rate limit, network, JSON decode,
-@@ -6200,10 +6140,28 @@ This compaction should PRIORITISE preserving all information related to the focu
+@@ -6666,10 +6606,28 @@ This compaction should PRIORITISE preserving all information related to the focu
          else:
              self._summary_has_user_turn = real_user_present
  
@@ -889,7 +889,7 @@ index 59ae723d2b..03996b3de4 100644
          )
          telemetry["chunk_count"] = 1 if turns_to_summarize else 0
  
-@@ -6322,6 +6280,7 @@ This compaction should PRIORITISE preserving all information related to the focu
+@@ -6788,6 +6746,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                      turns_to_summarize,
                      focus_topic=summary_focus_topic,
                      memory_context=memory_context,
@@ -897,7 +897,7 @@ index 59ae723d2b..03996b3de4 100644
                  )
              except AuxiliaryExplicitCancellation:
                  # Explicit cancellation is a true no-op. Restore state mutated by
-@@ -6453,22 +6412,10 @@ This compaction should PRIORITISE preserving all information related to the focu
+@@ -6919,22 +6878,10 @@ This compaction should PRIORITISE preserving all information related to the focu
                  reason=None if feasibility_skip else self._last_summary_error,
              )
  
@@ -925,10 +925,10 @@ index 59ae723d2b..03996b3de4 100644
          # last_head_role reads the assembled (post-strip) head; first_tail_role
          # reads the assembled (post-strip) tail_messages — a stripped stale
 diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
-index 0515a31331..e31514ac4f 100644
+index 40543644cc..f184fde673 100644
 --- a/agent/conversation_loop.py
 +++ b/agent/conversation_loop.py
-@@ -6362,6 +6362,7 @@ def run_conversation(
+@@ -6662,6 +6662,7 @@ def run_conversation(
                      except Exception:
                          pass
  
@@ -936,7 +936,7 @@ index 0515a31331..e31514ac4f 100644
                  agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
  
                  if getattr(agent, "_incremental_persistence_failed", False):
-@@ -6455,7 +6456,9 @@ def run_conversation(
+@@ -6755,7 +6756,9 @@ def run_conversation(
                  if (
                      agent.compression_enabled
                      and compression_attempts < max_compression_attempts
@@ -948,7 +948,7 @@ index 0515a31331..e31514ac4f 100644
                      compression_attempts += 1
                      # Compression is actually running (block cleared / was
 diff --git a/cli.py b/cli.py
-index 9583383f61..ab7e2125a6 100644
+index 4c538df43d..1fdafe564f 100644
 --- a/cli.py
 +++ b/cli.py
 @@ -43,7 +43,7 @@ from urllib.parse import unquote, urlparse
@@ -960,7 +960,7 @@ index 9583383f61..ab7e2125a6 100644
  
  logger = logging.getLogger(__name__)
  
-@@ -2769,6 +2769,11 @@ def _install_skin_light_mode_hook() -> None:
+@@ -2816,6 +2816,11 @@ def _install_skin_light_mode_hook() -> None:
      def _wrapped_get_color(self, key, fallback=""):
          value = _orig_get_color(self, key, fallback)
          try:
@@ -972,7 +972,7 @@ index 9583383f61..ab7e2125a6 100644
              return _maybe_remap_for_light_mode(value)
          except Exception:
              return value
-@@ -5267,6 +5272,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
+@@ -5339,6 +5344,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
              "session_total_tokens": 0,
              "session_api_calls": 0,
              "compressions": 0,
@@ -980,7 +980,7 @@ index 9583383f61..ab7e2125a6 100644
              "active_background_tasks": 0,
              "active_background_processes": 0,
              "active_background_subagents": 0,
-@@ -5349,6 +5355,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
+@@ -5421,6 +5427,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
              pass
  
  
@@ -988,7 +988,7 @@ index 9583383f61..ab7e2125a6 100644
          if not agent:
              return snapshot
  
-@@ -5985,6 +5992,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
+@@ -6137,6 +6144,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
          except Exception:
              return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
  
@@ -996,7 +996,7 @@ index 9583383f61..ab7e2125a6 100644
      def _get_status_bar_fragments(self):
          if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
              return []
-@@ -6037,6 +6045,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
+@@ -6190,6 +6198,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                      if compressions:
                          frags.append(("class:status-bar-dim", " · "))
                          frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -1004,7 +1004,7 @@ index 9583383f61..ab7e2125a6 100644
                      if bg_count:
                          frags.append(("class:status-bar-dim", " · "))
                          frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
-@@ -6086,6 +6095,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
+@@ -6239,6 +6248,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                      if compressions:
                          frags.append(("class:status-bar-dim", " │ "))
                          frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -1012,7 +1012,7 @@ index 9583383f61..ab7e2125a6 100644
                      if bg_count:
                          frags.append(("class:status-bar-dim", " │ "))
                          frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
-@@ -9882,6 +9892,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
+@@ -10045,6 +10055,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
              self.show_toolsets()
          elif canonical == "config":
              self.show_config()
@@ -1020,7 +1020,7 @@ index 9583383f61..ab7e2125a6 100644
          elif canonical == "redraw":
              # Manual recovery for terminal buffer drift from multiplexer
              # tab switches, subshell ``clear``, SSH window restores, etc.
-@@ -10782,6 +10793,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
+@@ -11016,6 +11027,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
  
  
  
@@ -1029,10 +1029,10 @@ index 9583383f61..ab7e2125a6 100644
          """Cycle tool progress mode: off → new → all → verbose → off.
  
 diff --git a/gateway/run.py b/gateway/run.py
-index 24d501b5b7..f56d6e7ac1 100644
+index c3aae82cf5..1802582eb3 100644
 --- a/gateway/run.py
 +++ b/gateway/run.py
-@@ -14033,6 +14033,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -14403,6 +14403,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                  "profile": self._handle_profile_command,
                  "update": self._handle_update_command,
                  "version": self._handle_version_command,
@@ -1040,7 +1040,7 @@ index 24d501b5b7..f56d6e7ac1 100644
              }.get(name)
              if plain is not None:
                  return await plain(event)
-@@ -15068,6 +15069,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -15544,6 +15545,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          if canonical == "footer":
              return await self._handle_footer_command(event)
  
@@ -1048,7 +1048,7 @@ index 24d501b5b7..f56d6e7ac1 100644
          if canonical == "yolo":
              return await self._handle_yolo_command(event)
  
-@@ -22242,6 +22244,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -23032,6 +23034,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          ("model", "context_length"),
          ("model", "max_tokens"),
          ("compression", "enabled"),
@@ -1056,7 +1056,7 @@ index 24d501b5b7..f56d6e7ac1 100644
          ("compression", "progress_notices"),
          ("compression", "threshold"),
          ("compression", "model_thresholds"),
-@@ -23161,6 +23164,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -23951,6 +23954,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          if agent is None or agent is _AGENT_PENDING_SENTINEL:
              return
  
@@ -1065,10 +1065,10 @@ index 24d501b5b7..f56d6e7ac1 100644
          # sandbox and child subagents are in use by the running request.
          running_ids = {
 diff --git a/gateway/slash_commands.py b/gateway/slash_commands.py
-index 7b87e43505..0ee3f4c65d 100644
+index fe86f0ad7d..e0a1a561f3 100644
 --- a/gateway/slash_commands.py
 +++ b/gateway/slash_commands.py
-@@ -3797,6 +3797,7 @@ class GatewaySlashCommandsMixin:
+@@ -3958,6 +3958,7 @@ class GatewaySlashCommandsMixin:
                  example = t("gateway.footer.example_line", preview=preview)
          return t("gateway.footer.saved", state=state, example=example)
  
@@ -1076,11 +1076,48 @@ index 7b87e43505..0ee3f4c65d 100644
      async def _handle_compress_command(self, event: MessageEvent) -> str:
          """Profile-scoping wrapper around manual /compress.
  
+diff --git a/hermes-memory/memory-distillation-log.md b/hermes-memory/memory-distillation-log.md
+new file mode 100644
+index 0000000000..7fc21d8f40
+--- /dev/null
++++ b/hermes-memory/memory-distillation-log.md
+@@ -0,0 +1,31 @@
++# Memory Distillation Log
++
++Privacy-safe daily audit history for the active Hermes profile's built-in memory.
++The scheduled maintenance job appends one dated entry per run and retains only
++the most recent 15 dated entries. Entries must never include memory contents,
++credentials, or personal-data excerpts.
++
++## 2026-08-02
++- Result: completed; no semantic overlaps remain.
++- Counts before→after: MEMORY 10 entries / 2,189 chars / 13 lines → 8 entries / 1,786 chars / 16 lines; USER 4 entries / 1,028 chars / 7 lines → 11 entries / 1,237 chars / 21 lines; total 14 entries / 3,217 chars / 20 lines → 19 entries / 3,023 chars / 37 lines.
++- Merged / shortened / moved / removed: 5 / 5 / 7 / 2.
++- Audit counts before→after: candidate score 1→0; semantic-overlap candidates 5→0; review files 1→0.
++
++## 2026-08-07
++- Result: completed; built-in memory enabled and verified via `hermes memory status` (injection, user profile, memory tool all enabled).
++- Counts before→after: MEMORY 13 entries / 2,184 chars / 25 lines → 13 entries / 2,059 chars / 25 lines; USER 13 entries / 1,367 chars / 25 lines → 14 entries / 1,494 chars / 27 lines; total 26 entries / 3,551 chars / 50 lines → 27 entries / 3,553 chars / 52 lines.
++- Merged / shortened / moved / removed: 0 / 0 / 1 / 0; splits: 1 (oversized compound entry split into two focused entries; one user-preference entry moved to its owner file).
++- Audit counts before→after: candidate score 1→0; candidates 1→0; review files 1→0; semantic-overlap candidates 0→0.
++
++## 2026-08-08
++- Result: completed; built-in memory enabled and verified via `hermes memory status` (injection, user profile, memory tool all enabled).
++- Counts before→after: MEMORY 14 entries / 2,187 chars / 27 lines → 15 entries / 2,299 chars / 29 lines; USER 14 entries / 1,369 chars / 27 lines → 13 entries / 1,257 chars / 25 lines; total 28 entries / 3,556 chars / 54 lines → 28 entries / 3,556 chars / 54 lines.
++- Merged / shortened / moved / removed: 0 / 0 / 1 / 0 (GR label-mapping convention moved from USER.md to MEMORY.md, its owner file for stable technical facts).
++- Audit counts before→after: candidate score 0→0; candidates 0→0; review files 0→0; semantic-overlap candidates 0→0.
++
++## 2026-08-09
++- Result: no-change; built-in memory enabled and verified via `hermes memory status`.
++- Counts before→after: MEMORY 15 entries / 2,196 chars / 29 lines → 15 entries / 2,196 chars / 29 lines; USER 14 entries / 1,304 chars / 27 lines → 14 entries / 1,304 chars / 27 lines.
++- Audit counts before→after: MEMORY candidate score 0→0; USER candidate score 0→0; semantic-overlap candidates 0→0.
++- Merged / shortened / moved / removed: 0 / 0 / 0 / 0.
++- Rationale: no safe semantic consolidation, ownership transfer, shortening, or stale-entry removal identified by the bounded audit and file review.
 diff --git a/hermes_cli/commands.py b/hermes_cli/commands.py
-index a803ee925f..897b31411c 100644
+index 8dde644b67..1ead491deb 100644
 --- a/hermes_cli/commands.py
 +++ b/hermes_cli/commands.py
-@@ -186,6 +186,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
+@@ -195,6 +195,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
      # Configuration
      CommandDef("config", "Show current configuration", "Configuration",
                 cli_only=True),
@@ -1089,10 +1126,10 @@ index a803ee925f..897b31411c 100644
                 args_hint="[model] [--provider name] [--global|--session] [--refresh]",
                 busy_policy="reject", busy_handler="model"),
 diff --git a/hermes_cli/config.py b/hermes_cli/config.py
-index ff4629daca..b636966809 100644
+index 199b3360d1..6571b50da5 100644
 --- a/hermes_cli/config.py
 +++ b/hermes_cli/config.py
-@@ -4910,6 +4910,19 @@ def set_config_value(key: str, value: str, force: bool = False):
+@@ -4977,6 +4977,19 @@ def set_config_value(key: str, value: str, force: bool = False):
              coerced_value = int(value)
          elif value.replace('.', '', 1).isdigit():
              coerced_value = float(value)
@@ -1113,10 +1150,10 @@ index ff4629daca..b636966809 100644
      value = coerced_value
      # Normalize a scalar ``model`` key before writing sub-keys so that
 diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
-index 0ae798094a..3b42120343 100644
+index 8b5ef69c90..428f740e22 100644
 --- a/hermes_cli/config_defaults.py
 +++ b/hermes_cli/config_defaults.py
-@@ -240,12 +240,24 @@ DEFAULT_CONFIG = {
+@@ -268,12 +268,24 @@ DEFAULT_CONFIG = {
          "image_input_mode": "auto",
          "disabled_toolsets": [],
  
@@ -1141,7 +1178,7 @@ index 0ae798094a..3b42120343 100644
      },
  
      "terminal": {
-@@ -560,6 +572,7 @@ DEFAULT_CONFIG = {
+@@ -594,6 +606,7 @@ DEFAULT_CONFIG = {
  
      "compression": {
          "enabled": True,
@@ -1149,7 +1186,7 @@ index 0ae798094a..3b42120343 100644
          "progress_notices": False,    # opt-in (#52995): when True, routine compression
                                        # progress statuses (compacting/preflight/pre-API/
                                        # idle/retry) are delivered to chat gateway
-@@ -884,6 +897,7 @@ DEFAULT_CONFIG = {
+@@ -928,6 +941,7 @@ DEFAULT_CONFIG = {
              "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
              "extra_body": {},
              "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
@@ -1157,7 +1194,7 @@ index 0ae798094a..3b42120343 100644
          },
          # Note: session_search no longer uses an auxiliary LLM (PR #27590 —
          # single-shape tool returns DB content directly). The old
-@@ -1102,6 +1116,9 @@ DEFAULT_CONFIG = {
+@@ -1146,6 +1160,9 @@ DEFAULT_CONFIG = {
          # Mirrors `hermes -c` muscle memory.  Default off so existing
          # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
          "tui_auto_resume_recent": False,
@@ -1229,10 +1266,10 @@ index 96b9227322..01fab91de3 100644
      """Return True when running inside a Termux (Android) environment.
  
 diff --git a/run_agent.py b/run_agent.py
-index 3e13c6493f..54f48e44b8 100644
+index 47b4a0e80e..3ff83ce6fa 100644
 --- a/run_agent.py
 +++ b/run_agent.py
-@@ -688,6 +688,7 @@ class AIAgent:
+@@ -695,6 +695,7 @@ class AIAgent:
          if not engine:
              return
  
@@ -1240,7 +1277,7 @@ index 3e13c6493f..54f48e44b8 100644
          if old_session_id and previous_messages is not None and hasattr(engine, "on_session_end"):
              try:
                  engine.on_session_end(old_session_id, previous_messages)
-@@ -6398,6 +6399,20 @@ class AIAgent:
+@@ -6530,6 +6531,20 @@ class AIAgent:
              except Exception:
                  pass
  
@@ -1261,7 +1298,7 @@ index 3e13c6493f..54f48e44b8 100644
      def _fire_tool_gen_started(self, tool_name: str) -> None:
          """Notify display layer that the model is generating tool call arguments.
  
-@@ -7314,6 +7329,7 @@ class AIAgent:
+@@ -7446,6 +7461,7 @@ class AIAgent:
          force: bool = False,
          defer_context_engine_notification: bool = False,
          commit_fence=None,
@@ -1269,7 +1306,7 @@ index 3e13c6493f..54f48e44b8 100644
      ) -> tuple:
          """Forwarder — see ``agent.conversation_compression.compress_context``.
  
-@@ -7380,7 +7396,7 @@ class AIAgent:
+@@ -7512,7 +7528,7 @@ class AIAgent:
                      defer_context_engine_notification=(
                          defer_context_engine_notification
                      ),
@@ -1481,10 +1518,10 @@ index 0d76eaaceb..d70279e76b 100644
  
  
 diff --git a/tests/agent/test_context_compressor.py b/tests/agent/test_context_compressor.py
-index cccf654abb..e26a3dd5da 100644
+index 164f54a652..c35afce83d 100644
 --- a/tests/agent/test_context_compressor.py
 +++ b/tests/agent/test_context_compressor.py
-@@ -1003,7 +1003,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
+@@ -1248,7 +1248,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
          # Default mode: abort flag must NOT fire.
          assert c._last_compress_aborted is False
          assert any(
@@ -1493,7 +1530,7 @@ index cccf654abb..e26a3dd5da 100644
              for m in result
          )
  
-@@ -1038,7 +1038,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
+@@ -1283,7 +1283,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
          with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
              result = c.compress(msgs)
  
@@ -1779,11 +1816,34 @@ index db3ea57ad5..6ddb815740 100644
      assert "MEMORY PROVIDER CONTEXT" in prompts[0]
      assert "Checkpoint id: ctx-123" in prompts[0]
  
+diff --git a/tests/agent/test_prompt_builder.py b/tests/agent/test_prompt_builder.py
+index c545220dcf..c47ecfb31b 100644
+--- a/tests/agent/test_prompt_builder.py
++++ b/tests/agent/test_prompt_builder.py
+@@ -726,7 +726,7 @@ class TestPromptBuilderConstants:
+         # Must contain explicit "don't" language near the MEDIA reference.
+         assert any(
+             marker in cli_hint.lower()
+-            for marker in ("do not emit media", "not intercepted", "do not", "don't")
++            for marker in ("do not emit media", "not intercepted", "do not", "don't", "絕勿輸出", "勿用")
+         ), "CLI hint should explicitly discourage MEDIA: tags."
+         # Messaging hints should still advertise MEDIA: positively (sanity
+         # check that this test is calibrated correctly).
+@@ -941,9 +941,6 @@ class TestToolUseEnforcementGuidance:
+ 
+ 
+ 
+-
+-
+-
+ class TestOpenAIModelExecutionGuidance:
+     """Tests for GPT/Codex-specific execution discipline guidance."""
+ 
 diff --git a/tests/cli/test_cli_light_mode.py b/tests/cli/test_cli_light_mode.py
-index 6d32a6f933..4d1a93beb8 100644
+index 0763cc4ff6..d62723cbbf 100644
 --- a/tests/cli/test_cli_light_mode.py
 +++ b/tests/cli/test_cli_light_mode.py
-@@ -104,3 +104,18 @@ class TestSkinConfigHook:
+@@ -168,6 +168,21 @@ class TestSkinConfigHook:
          assert skin.get_color("banner_text") == "#1A1A1A"
          assert skin.get_color("response_border") == "#9A6B00"
  
@@ -1802,6 +1862,9 @@ index 6d32a6f933..4d1a93beb8 100644
 +        cli_mod._LIGHT_MODE_CACHE = False
 +        assert skin.get_color("banner_text") == "#FAFAFA"
 +
+     def test_skin_color_passthrough_in_dark_mode(self, cli_mod, monkeypatch):
+         from hermes_cli.skin_engine import SkinConfig
+ 
 diff --git a/tests/gateway/test_agent_cache.py b/tests/gateway/test_agent_cache.py
 index a7e1d00cb9..b60b50720e 100644
 --- a/tests/gateway/test_agent_cache.py
@@ -1820,10 +1883,10 @@ index a7e1d00cb9..b60b50720e 100644
          runner._cleanup_agent_resources.assert_not_called()
 -
 diff --git a/tests/run_agent/test_run_agent.py b/tests/run_agent/test_run_agent.py
-index a4d5fea1e7..2413b6986b 100644
+index 222ba26ca6..d5b30c2bff 100644
 --- a/tests/run_agent/test_run_agent.py
 +++ b/tests/run_agent/test_run_agent.py
-@@ -2585,6 +2585,47 @@ class TestHandleMaxIterations:
+@@ -2597,6 +2597,47 @@ class TestHandleMaxIterations:
          assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
  
  
@@ -1871,13 +1934,8 @@ index a4d5fea1e7..2413b6986b 100644
  
  
  
-@@ -6146,4 +6187,3 @@ class TestMemoryContextSanitization:
-         assert "memory-context" not in result.lower()
-         assert "stale observation" not in result
-         assert "how is the honcho working" in result
--
 diff --git a/tests/run_agent/test_run_agent_codex_responses.py b/tests/run_agent/test_run_agent_codex_responses.py
-index 4b11b1fdb7..6e07b25671 100644
+index 18dc13526b..647d3eba1d 100644
 --- a/tests/run_agent/test_run_agent_codex_responses.py
 +++ b/tests/run_agent/test_run_agent_codex_responses.py
 @@ -501,6 +501,7 @@ def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):
@@ -1903,7 +1961,7 @@ index 4b11b1fdb7..6e07b25671 100644
      assert response.output == [commentary_item]
  
 diff --git a/tests/test_hermes_constants.py b/tests/test_hermes_constants.py
-index 1d07d9d6b4..630fd5a301 100644
+index a3164c2b2e..80d2cbbf37 100644
 --- a/tests/test_hermes_constants.py
 +++ b/tests/test_hermes_constants.py
 @@ -476,6 +476,37 @@ class TestReasoningOverridesDefaultConfig:
@@ -1945,7 +2003,7 @@ index 1d07d9d6b4..630fd5a301 100644
      """Tests for secure_parent_dir() — prevents chmod on / or top-level dirs."""
  
 diff --git a/tests/test_tui_gateway_server.py b/tests/test_tui_gateway_server.py
-index e864f185ce..da5a8cb6a1 100644
+index 2df2b124e3..4dfaa74fcb 100644
 --- a/tests/test_tui_gateway_server.py
 +++ b/tests/test_tui_gateway_server.py
 @@ -119,6 +119,14 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
@@ -2072,16 +2130,27 @@ index e864f185ce..da5a8cb6a1 100644
  def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
      class _ImmediateThread:
          def __init__(self, target=None, daemon=None, **_kwargs):
-@@ -1059,7 +1169,7 @@ def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
+@@ -1099,10 +1209,15 @@ def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
      server._on_tool_start("clarify-off-test", "tool-clarify", "clarify", args)
      server._on_tool_complete("clarify-off-test", "tool-clarify", "clarify", args, result)
  
 -    assert [event[0] for event in events] == ["tool.start", "tool.complete"]
-+    assert [event[0] for event in events] == ["tool.start", "tool.complete", "session.info"]
-     assert events[0][2]["name"] == "clarify"
-     assert events[0][2]["tool_id"] == "tool-clarify"
-     assert events[1][2]["result"]["user_response"] == "A"
-@@ -1079,7 +1189,9 @@ def test_tui_non_interactive_tool_lifecycle_stays_hidden_when_tool_progress_off(
+-    assert events[0][2]["name"] == "clarify"
+-    assert events[0][2]["tool_id"] == "tool-clarify"
+-    assert events[1][2]["result"]["user_response"] == "A"
++    # A real background delegation may finish while this test owns the global
++    # emitter. Scope assertions to this session instead of racing unrelated
++    # session.info events from the process-wide async registry.
++    target_events = [event for event in events if event[1] == "clarify-off-test"]
++
++    assert [event[0] for event in target_events] == ["tool.start", "tool.complete", "session.info"]
++    assert target_events[0][2]["name"] == "clarify"
++    assert target_events[0][2]["tool_id"] == "tool-clarify"
++    assert target_events[1][2]["result"]["user_response"] == "A"
+ 
+ 
+ def test_tui_non_interactive_tool_lifecycle_stays_hidden_when_tool_progress_off(monkeypatch):
+@@ -1119,7 +1234,9 @@ def test_tui_non_interactive_tool_lifecycle_stays_hidden_when_tool_progress_off(
      server._on_tool_start("terminal-off-test", "tool-1", "terminal", {"command": "pwd"})
      server._on_tool_complete("terminal-off-test", "tool-1", "terminal", {"command": "pwd"}, "done")
  
@@ -2092,7 +2161,7 @@ index e864f185ce..da5a8cb6a1 100644
  
  
  def test_dispatch_rejects_non_object_request():
-@@ -4398,7 +4510,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
+@@ -4506,7 +4623,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
  
      try:
          monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -2101,7 +2170,7 @@ index e864f185ce..da5a8cb6a1 100644
          monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
          monkeypatch.setattr(server, "_emit", lambda *a: None)
          monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
-@@ -4739,7 +4851,7 @@ def _configure_immediate_prompt_run(
+@@ -4848,7 +4965,7 @@ def _configure_immediate_prompt_run(
      monkeypatch.setattr(server, "_set_session_context", lambda *_args, **_kwargs: [])
      monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
      monkeypatch.setattr(server, "_session_info", lambda *_args: {})
@@ -2110,7 +2179,7 @@ index e864f185ce..da5a8cb6a1 100644
      monkeypatch.setattr(
          server, "_sync_session_key_after_compress", lambda *_args, **_kwargs: None
      )
-@@ -8892,7 +9004,7 @@ def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
+@@ -9130,7 +9247,7 @@ def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
      emits: list[tuple] = []
      try:
          monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -2119,7 +2188,7 @@ index e864f185ce..da5a8cb6a1 100644
          monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
          monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
  
-@@ -8997,7 +9109,7 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
+@@ -9235,7 +9352,7 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
          emits: list[tuple] = []
          try:
              monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -2128,7 +2197,7 @@ index e864f185ce..da5a8cb6a1 100644
              monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
              monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
  
-@@ -9064,7 +9176,7 @@ def test_prompt_submit_sanitizes_bracketed_paste_before_agent(monkeypatch):
+@@ -9302,7 +9419,7 @@ def test_prompt_submit_sanitizes_bracketed_paste_before_agent(monkeypatch):
      server._sessions["sid"] = _session(agent=_Agent())
      try:
          monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -2137,7 +2206,7 @@ index e864f185ce..da5a8cb6a1 100644
          monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
          monkeypatch.setattr(server, "_emit", lambda *a: None)
          monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
-@@ -9105,7 +9217,7 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
+@@ -9343,7 +9460,7 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
      emits: list[tuple] = []
      try:
          monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -2146,7 +2215,7 @@ index e864f185ce..da5a8cb6a1 100644
          monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
          monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
  
-@@ -9168,7 +9280,7 @@ def test_prompt_submit_snapshots_history_after_pending_model_switch(monkeypatch)
+@@ -9406,7 +9523,7 @@ def test_prompt_submit_snapshots_history_after_pending_model_switch(monkeypatch)
          monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
          monkeypatch.setattr(server, "_apply_pending_model_switch", _apply_pending)
          monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda *_a: None)
@@ -2155,7 +2224,7 @@ index e864f185ce..da5a8cb6a1 100644
          monkeypatch.setattr(server, "render_message", lambda *_a: "")
          monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
  
-@@ -9230,7 +9342,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
+@@ -9468,7 +9585,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
  
      try:
          monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -2164,7 +2233,7 @@ index e864f185ce..da5a8cb6a1 100644
          monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
          monkeypatch.setattr(server, "_emit", lambda *a: None)
          monkeypatch.setattr(server, "_get_db", lambda: stub_db)
-@@ -9377,7 +9489,7 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
+@@ -9617,7 +9734,7 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
  
      try:
          monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -2173,16 +2242,16 @@ index e864f185ce..da5a8cb6a1 100644
          monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
          monkeypatch.setattr(server, "_emit", lambda *a: None)
          monkeypatch.setattr(server, "_get_db", lambda: stub_db)
-@@ -13445,7 +13557,7 @@ def _setup_make_agent_mocks(monkeypatch, cfg):
+@@ -13630,7 +13747,7 @@ def _setup_make_agent_mocks(monkeypatch, cfg):
      )
      monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "off")
      monkeypatch.setattr(server, "_load_reasoning_config", lambda model="": None)
 -    monkeypatch.setattr(server, "_load_service_tier", lambda: None)
 +    monkeypatch.setattr(server, "_load_service_tier", lambda model="": None)
-     monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
+     monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: None)
      monkeypatch.setattr(server, "_get_db", lambda: None)
      monkeypatch.setattr(server, "_agent_cbs", lambda sid: {})
-@@ -15522,6 +15634,44 @@ def test_get_usage_clamps_post_compression_sentinel():
+@@ -15707,6 +15824,44 @@ def test_get_usage_clamps_post_compression_sentinel():
      assert "context_percent" not in usage
  
  
@@ -2227,7 +2296,7 @@ index e864f185ce..da5a8cb6a1 100644
  # ---------------------------------------------------------------------------
  # Streaming TTS — per-turn pipeline + barge-in
  # ---------------------------------------------------------------------------
-@@ -16101,7 +16251,7 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
+@@ -16286,7 +16441,7 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
      server._sessions["sid"] = _session(agent=_Agent())
      try:
          monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -2236,7 +2305,7 @@ index e864f185ce..da5a8cb6a1 100644
          monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
          monkeypatch.setattr(server, "_emit", lambda *a: None)
  
-@@ -16166,7 +16316,7 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch):
+@@ -16351,7 +16506,7 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch):
      server._sessions["sid_trim"] = session
      try:
          monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -2317,10 +2386,10 @@ index 76e3533088..45ce0512cb 100644
  
  class TestSessionSourceFallback:
 diff --git a/tui_gateway/server.py b/tui_gateway/server.py
-index 87568f7f90..d530a78d1c 100644
+index c33cba50ea..a40ae6a9fb 100644
 --- a/tui_gateway/server.py
 +++ b/tui_gateway/server.py
-@@ -491,13 +491,13 @@ def _notify_session_boundary(
+@@ -497,13 +497,13 @@ def _notify_session_boundary(
          if event_type == "on_session_finalize":
              finalize_session(
                  session_id=session_id,
@@ -2336,7 +2405,7 @@ index 87568f7f90..d530a78d1c 100644
              )
      except Exception:
          pass
-@@ -1824,6 +1824,17 @@ def _status_update(sid: str, kind: str, text: str | None = None):
+@@ -1858,6 +1858,17 @@ def _status_update(sid: str, kind: str, text: str | None = None):
  
          if COMPACTION_STATUS_MARKER in body:
              out_kind = "compacting"
@@ -2354,18 +2423,7 @@ index 87568f7f90..d530a78d1c 100644
      _emit("status.update", sid, {"kind": out_kind, "text": body})
  
  
-@@ -3514,10 +3525,6 @@ def _resolve_session_source(explicit: str | None) -> str:
-     return _resolve_session_platform()
- 
- 
--def _resolve_agent_platform(source: str | None) -> str:
--    return _resolve_session_source(source)
--
--
- def _config_model_target() -> tuple[str, str]:
-     """(model, provider) currently selected by config.yaml — and ONLY config.
- 
-@@ -3993,17 +4000,34 @@ def _load_reasoning_config(model: str = "") -> dict | None:
+@@ -4100,17 +4111,34 @@ def _load_reasoning_config(model: str = "") -> dict | None:
      return resolve_reasoning_config(_load_cfg(), model)
  
  
@@ -2411,7 +2469,7 @@ index 87568f7f90..d530a78d1c 100644
  
  
  def _load_provider_routing() -> dict:
-@@ -4284,6 +4308,10 @@ def _snapshot_agent_model_runtime(agent) -> dict:
+@@ -4413,6 +4441,10 @@ def _snapshot_agent_model_runtime(agent) -> dict:
          "api_key": getattr(agent, "api_key", ""),
          "base_url": getattr(agent, "base_url", ""),
          "api_mode": getattr(agent, "api_mode", ""),
@@ -2422,7 +2480,7 @@ index 87568f7f90..d530a78d1c 100644
          "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
      }
  
-@@ -4292,17 +4320,17 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
+@@ -4421,17 +4453,17 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
      """Restore an agent model runtime captured before a one-turn override."""
      if not snapshot or agent is None:
          return
@@ -2443,7 +2501,7 @@ index 87568f7f90..d530a78d1c 100644
          agent.switch_model(
              new_model=snapshot.get("model", ""),
              new_provider=snapshot.get("provider", ""),
-@@ -4310,6 +4338,8 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
+@@ -4439,6 +4471,8 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
              base_url=snapshot.get("base_url", ""),
              api_mode=snapshot.get("api_mode", ""),
          )
@@ -2452,7 +2510,7 @@ index 87568f7f90..d530a78d1c 100644
  
  
  def _apply_model_switch(
-@@ -4483,6 +4513,17 @@ def _apply_model_switch(
+@@ -4612,6 +4646,17 @@ def _apply_model_switch(
                  f"Model switch to {result.new_model} failed ({exc}); "
                  f"staying on {getattr(agent, 'model', current_model)}."
              ) from exc
@@ -2470,7 +2528,7 @@ index 87568f7f90..d530a78d1c 100644
          _restart_slash_worker(sid, session)
          _persist_live_session_runtime(session)
          _persist_live_session_system_prompt(session)
-@@ -4731,6 +4772,7 @@ def _compress_session_history(
+@@ -4860,6 +4905,7 @@ def _compress_session_history(
  
      if partial and tail:
          compressed = rejoin_compressed_head_and_tail(compressed, tail)
@@ -2478,7 +2536,7 @@ index 87568f7f90..d530a78d1c 100644
      with session["history_lock"]:
          if int(session.get("history_version", 0)) != history_version:
              # External mutation during compaction — drop the compressed
-@@ -4739,12 +4781,14 @@ def _compress_session_history(
+@@ -4868,12 +4914,14 @@ def _compress_session_history(
                  agent,
                  committed=False,
              )
@@ -2498,7 +2556,7 @@ index 87568f7f90..d530a78d1c 100644
  
  
  def _sync_session_key_after_compress(
-@@ -4836,7 +4880,40 @@ def _sync_session_key_after_compress(
+@@ -4965,7 +5013,40 @@ def _sync_session_key_after_compress(
              pass
  
  
@@ -2540,7 +2598,7 @@ index 87568f7f90..d530a78d1c 100644
      g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
      usage = {
          "model": getattr(agent, "model", "") or "",
-@@ -4857,24 +4934,86 @@ def _get_usage(agent) -> dict:
+@@ -4986,24 +5067,86 @@ def _get_usage(agent) -> dict:
          # impossible readings such as 1.9m/120k clamped to 100% (#50421).
          #
          # Per the issue, populate context_used/percent only from a *real*
@@ -2642,7 +2700,7 @@ index 87568f7f90..d530a78d1c 100644
          usage["compressions"] = getattr(comp, "compression_count", 0) or 0
      # Live count of background/async subagents still running (delegate_task
      # batches + background single delegations). Mirrors the classic CLI status
-@@ -4971,7 +5110,11 @@ def _session_usage_snapshot(session: dict | None) -> dict:
+@@ -5100,7 +5243,11 @@ def _session_usage_snapshot(session: dict | None) -> dict:
      if (session or {}).get("_compute_host_active") and isinstance(mirror_usage, dict):
          return dict(mirror_usage)
      if agent is not None:
@@ -2655,7 +2713,7 @@ index 87568f7f90..d530a78d1c 100644
      return dict(mirror_usage) if isinstance(mirror_usage, dict) else {}
  
  
-@@ -5015,7 +5158,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
+@@ -5144,7 +5291,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
      session_key = str(
          (session or {}).get("session_key") or getattr(agent, "session_id", "") or ""
      )
@@ -2665,15 +2723,32 @@ index 87568f7f90..d530a78d1c 100644
      personality = (session or {}).get("personality", cfg_personality)
      reasoning_config = getattr(agent, "reasoning_config", None)
      reasoning_effort = ""
-@@ -5070,6 +5214,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
-         "branch": _git_branch_for_cwd(cwd),
+@@ -5200,6 +5348,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
          "project": _project_info_for_cwd(cwd),
+         "terminal_backend": _effective_terminal_backend(),
          "personality": str(personality or ""),
 +        "tui_startup_panel": bool(display_cfg.get("tui_startup_panel", True)),
          "running": bool((session or {}).get("running")),
          "title": _session_live_title(session or {}, session_key) if session_key else "",
          "stored_session_id": session_key or "",
-@@ -5365,6 +5510,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
+@@ -5242,6 +5391,16 @@ def _session_info(agent, session: dict | None = None) -> dict:
+             info["skills"] = get_available_skills()
+         except Exception:
+             pass
++        try:
++            from tools import skill_usage
++
++            info["stale_skills"] = sum(
++                1
++                for rec in skill_usage.load_usage().values()
++                if isinstance(rec, dict) and rec.get("state") == skill_usage.STATE_STALE
++            )
++        except Exception:
++            pass
+     try:
+         from tools.mcp_tool import get_mcp_status
+ 
+@@ -5495,6 +5654,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
          pass
      if _tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name):
          _emit("tool.complete", sid, payload)
@@ -2683,7 +2758,7 @@ index 87568f7f90..d530a78d1c 100644
  
  
  def _on_tool_progress(
-@@ -6428,6 +6576,14 @@ def _make_agent(
+@@ -6573,6 +6735,14 @@ def _make_agent(
                  raise RuntimeError("Auth fallback resolved without a model")
              model = resolution.selected_model
      _pr = _load_provider_routing()
@@ -2698,7 +2773,7 @@ index 87568f7f90..d530a78d1c 100644
      return AIAgent(
          model=model,
          max_iterations=_cfg_max_turns(cfg, 500),
-@@ -6449,11 +6605,8 @@ def _make_agent(
+@@ -6594,11 +6764,8 @@ def _make_agent(
              if reasoning_config_override is not None
              else _load_reasoning_config(str(model or ""))
          ),
@@ -2709,10 +2784,10 @@ index 87568f7f90..d530a78d1c 100644
 -        ),
 +        service_tier=_effective_service_tier,
 +        request_overrides=_effective_request_overrides,
-         enabled_toolsets=_load_enabled_toolsets(),
+         enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
          # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
          # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
-@@ -6464,7 +6617,7 @@ def _make_agent(
+@@ -6609,7 +6776,7 @@ def _make_agent(
          provider_sort=_pr.get("sort"),
          provider_require_parameters=_pr.get("require_parameters", False),
          provider_data_collection=_pr.get("data_collection"),
@@ -2721,15 +2796,15 @@ index 87568f7f90..d530a78d1c 100644
          session_id=session_id or key,
          session_db=session_db if session_db is not None else _get_db(),
          ephemeral_system_prompt=system_prompt or None,
-@@ -9388,6 +9541,7 @@ def _run_prompt_submit(
-     def run():
+@@ -9590,6 +9757,7 @@ def _run_prompt_submit(
+         runtime_session_token = _current_runtime_session_record.set(session)
          approval_token = None
          session_tokens = []
 +        previous_throughput_callback = getattr(agent, "_throughput_callback", None)
          home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
          secret_token = None
          goal_followup = None  # set by the post-turn goal hook below
-@@ -9621,6 +9775,16 @@ def _run_prompt_submit(
+@@ -9816,6 +9984,16 @@ def _run_prompt_submit(
                      tts_queue.put(delta)
                  _emit("message.delta", sid, payload)
  
@@ -2746,7 +2821,7 @@ index 87568f7f90..d530a78d1c 100644
              # Surface interim assistant text (commentary emitted alongside
              # tool calls, or the attempted final answer before a verify-on-stop
              # nudge) so the desktop can seal it as its own segment instead of
-@@ -10092,6 +10256,7 @@ def _run_prompt_submit(
+@@ -10256,6 +10434,7 @@ def _run_prompt_submit(
              # Clear the per-turn interim callback so a stale closure from
              # this turn can't fire during a later turn on the same agent.
              agent.interim_assistant_callback = None
@@ -2754,18 +2829,259 @@ index 87568f7f90..d530a78d1c 100644
              with session["history_lock"]:
                  session["running"] = False
                  session["last_active"] = time.time()
+diff --git a/ui-tui/packages/hermes-ink/src/ink/ink-backpressure.test.ts b/ui-tui/packages/hermes-ink/src/ink/ink-backpressure.test.ts
+index 0c76c08bab..f5e2e3ff84 100644
+--- a/ui-tui/packages/hermes-ink/src/ink/ink-backpressure.test.ts
++++ b/ui-tui/packages/hermes-ink/src/ink/ink-backpressure.test.ts
+@@ -159,6 +159,7 @@ describe('Ink stdout backpressure coalescing (issue #31486)', () => {
+       // (pendingDrainCount stays > 0). After MAX_COALESCED_BACKPRESSURE_FRAMES
+       // coalesced retries, the renderer must force a write through.
+       ink.render(React.createElement(Text, null, 'forced'))
++      ink.onRender()
+ 
+       // Drive enough retry ticks to exceed the ceiling.
+       for (let i = 0; i <= MAX_COALESCED_BACKPRESSURE_FRAMES + 2; i++) {
+diff --git a/ui-tui/packages/hermes-ink/src/utils/execFileNoThrow.test.ts b/ui-tui/packages/hermes-ink/src/utils/execFileNoThrow.test.ts
+index a682f4d8b9..538a1fd94c 100644
+--- a/ui-tui/packages/hermes-ink/src/utils/execFileNoThrow.test.ts
++++ b/ui-tui/packages/hermes-ink/src/utils/execFileNoThrow.test.ts
+@@ -93,11 +93,11 @@ describe.skipIf(onWindows)('execFileNoThrow with daemon-style children', () => {
+ 
+     const elapsed = Date.now() - start
+ 
+-    // The shell exits in a few ms. resolveOnExit lets us return on exit
+-    // (code 0) instead of waiting for the orphaned sleeper to release
+-    // stdio. Should be well under 200ms even on slow CI.
++    // resolveOnExit must settle well before the inherited 3s sleeper releases
++    // stdio. Leave enough headroom for a fully parallel test suite on a busy
++    // runner; the behavioral boundary is the sleeper lifetime, not 500ms.
+     expect(result.code).toBe(0)
+-    expect(elapsed).toBeLessThan(500)
++    expect(elapsed).toBeLessThan(1500)
+   })
+ 
+   it("still surfaces the right code when resolveOnExit'd child exits non-zero", async () => {
+diff --git a/ui-tui/src/__tests__/appChromeBlockedTimers.test.tsx b/ui-tui/src/__tests__/appChromeBlockedTimers.test.tsx
+index 56d80a350f..b0106caed3 100644
+--- a/ui-tui/src/__tests__/appChromeBlockedTimers.test.tsx
++++ b/ui-tui/src/__tests__/appChromeBlockedTimers.test.tsx
+@@ -28,8 +28,8 @@ const mounted: Array<() => void> = []
+  * Mount a real StatusRule through Ink so the leaf components' effects — and
+  * therefore their `setInterval` calls — actually run.  The existing
+  * appChromeStatusRule tests invoke `StatusRule(...)` as a plain function,
+- * which only builds the element tree and never mounts FaceTicker /
+- * SessionDuration / IdleSince, so it cannot observe timer behaviour.
++ * which only builds the element tree and never mounts WaterTicker /
++ * IdleSince, so it cannot observe timer behaviour.
+  *
+  * Teardown is registered up front so a failing assertion still unmounts the
+  * tree — a leaked instance would keep re-arming timers into the next test.
+@@ -93,8 +93,7 @@ const idleProps: StatusRuleProps = {
+   voiceLabel: ''
+ }
+ 
+-// Busy swaps the idle read-out for the FaceTicker, which owns the glyph +
+-// verb + elapsed-clock trio.
++// Busy keeps the fixed water ticker moving while the idle clock disappears.
+ const busyProps: StatusRuleProps = {
+   ...idleProps,
+   busy: true,
+@@ -226,10 +225,10 @@ afterEach(() => {
+ })
+ 
+ describe('status-chrome timers under an occluding overlay', () => {
+-  it('arms the one-second SessionDuration + IdleSince clocks when nothing covers the rule', () => {
++  it('arms the one-second IdleSince clock when nothing covers the fixed water rule', () => {
+     mount(idleProps)
+ 
+-    expect(oneSecondTimers(intervalSpy)).toBe(2)
++    expect(oneSecondTimers(intervalSpy)).toBe(1)
+   })
+ 
+   it('arms no timer at all when an occluding overlay is already open', () => {
+@@ -240,15 +239,15 @@ describe('status-chrome timers under an occluding overlay', () => {
+     expect(oneSecondTimers(intervalSpy)).toBe(0)
+   })
+ 
+-  it('arms the FaceTicker glyph/verb/clock trio mid-turn when nothing covers the rule', () => {
++  it('arms the fixed water cadence mid-turn when nothing covers the rule', () => {
+     mount(busyProps)
+ 
+-    // kaomoji cadence for the glyph + verb rotation, plus the elapsed clock.
+-    expect(armedDelays(intervalSpy)).toContain(2500)
+-    expect(oneSecondTimers(intervalSpy)).toBeGreaterThan(0)
++    expect(armedDelays(intervalSpy)).toContain(60)
++    expect(armedDelays(intervalSpy)).not.toContain(2500)
++    expect(oneSecondTimers(intervalSpy)).toBe(0)
+   })
+ 
+-  it('arms no FaceTicker timer mid-turn while the modal widget slot is open', () => {
++  it('arms no water timer mid-turn while the modal widget slot is open', () => {
+     patchOverlayState({ widget: { appId: 'demo', state: null } })
+ 
+     mount(busyProps)
+@@ -257,15 +256,15 @@ describe('status-chrome timers under an occluding overlay', () => {
+     expect(oneSecondTimers(intervalSpy)).toBe(0)
+   })
+ 
+-  it('keeps the FaceTicker running mid-turn under a flow-layout sudo prompt', () => {
++  it('keeps the water ticker running mid-turn under a flow-layout sudo prompt', () => {
+     // `sudo` is in `$isBlocked` but renders in PromptZone's normal flow, so it
+-    // pushes the rule down rather than covering it — the trio must keep going.
++    // pushes the rule down rather than covering it — the ticker must keep going.
+     patchOverlayState({ sudo: { requestId: 'sudo-1' } })
+ 
+     mount(busyProps)
+ 
+-    expect(armedDelays(intervalSpy)).toContain(2500)
+-    expect(oneSecondTimers(intervalSpy)).toBeGreaterThan(0)
++    expect(armedDelays(intervalSpy)).toContain(60)
++    expect(oneSecondTimers(intervalSpy)).toBe(0)
+   })
+ 
+   it('keeps the clocks running when a floating overlay cannot reach a bottom status rule', () => {
+@@ -277,19 +276,18 @@ describe('status-chrome timers under an occluding overlay', () => {
+ 
+     mount(idleProps)
+ 
+-    expect(oneSecondTimers(intervalSpy)).toBe(2)
++    expect(oneSecondTimers(intervalSpy)).toBe(1)
+   })
+ 
+   it('re-syncs the elapsed read-outs from the wall clock on reveal instead of resuming stale', async () => {
+     // Regression guard for the naive fix: an early `return` that pauses the
+-    // interval but never re-seeds `now` leaves SessionDuration and IdleSince
+-    // frozen at the instant the overlay opened.
++    // interval but never re-seeds `now` leaves IdleSince frozen at the instant
++    // the overlay opened.
+     patchOverlayState({ sessions: true })
+ 
+     const rule = mount(idleProps)
+ 
+-    expect(rule.output()).toContain('1m 0s')
+-    expect(rule.output()).toContain('✓ 5s')
++    expect(rule.output()).not.toContain('✓ 5s')
+ 
+     // Five minutes of wall clock elapse while the overlay covers the rule.
+     nowSpy.mockReturnValue(T0 + 300_000)
+@@ -300,23 +298,21 @@ describe('status-chrome timers under an occluding overlay', () => {
+     const resumed = rule.output()
+ 
+     // Caught up to real elapsed time, not stuck on the pre-overlay values.
+-    expect(resumed).toContain('6m 0s')
+     expect(resumed).toContain('✓ 5m 5s')
+-    expect(resumed).not.toContain('1m 0s')
+ 
+     // …and the clocks are running again.
+-    expect(oneSecondTimers(intervalSpy)).toBe(2)
++    expect(oneSecondTimers(intervalSpy)).toBe(1)
+   })
+ 
+   it('tears the clocks down when an overlay opens over an already-running status rule', async () => {
+     mount(idleProps)
+ 
+-    // Handles of the two live 1-second clocks (SessionDuration + IdleSince).
++    // Handle of the live one-second IdleSince clock.
+     const clocks = intervalSpy.mock.results
+       .filter((_result, i) => intervalSpy.mock.calls[i]?.[1] === 1000)
+       .map(result => result.value as ReturnType<typeof setInterval>)
+ 
+-    expect(clocks).toHaveLength(2)
++    expect(clocks).toHaveLength(1)
+ 
+     const clearSpy = vi.spyOn(globalThis, 'clearInterval')
+ 
+@@ -328,8 +324,8 @@ describe('status-chrome timers under an occluding overlay', () => {
+       expect(clearSpy).toHaveBeenCalledWith(handle)
+     }
+ 
+-    // … and the occluded re-run arms no replacement (still just the original two).
+-    expect(oneSecondTimers(intervalSpy)).toBe(2)
++    // … and the occluded re-run arms no replacement (still just the original one).
++    expect(oneSecondTimers(intervalSpy)).toBe(1)
+ 
+     clearSpy.mockRestore()
+   })
+@@ -380,7 +376,7 @@ describe('status-chrome timers track the current overlay model', () => {
+ 
+     mount(idleProps)
+ 
+-    expect(oneSecondTimers(intervalSpy)).toBe(2)
++    expect(oneSecondTimers(intervalSpy)).toBe(1)
+   })
+ 
+   it('keeps the clocks running for the non-occluding ambient dock', () => {
+@@ -390,7 +386,7 @@ describe('status-chrome timers track the current overlay model', () => {
+ 
+     mount(idleProps)
+ 
+-    expect(oneSecondTimers(intervalSpy)).toBe(2)
++    expect(oneSecondTimers(intervalSpy)).toBe(1)
+   })
+ })
+ 
+@@ -406,9 +402,9 @@ describe('AppLayout status-rule visibility', () => {
+ 
+     // The rule is genuinely rendered — the approval prompt pushed it, it did
+     // not cover it — so freezing its clock would freeze something visible.
+-    expect(layout.output()).toContain('~/repo')
+-    expect(layout.output()).toContain('1m 0s')
+-    expect(oneSecondTimers(intervalSpy)).toBe(2)
++    expect(layout.output()).toContain('standard')
++    expect(layout.output()).toContain('✓ 5s')
++    expect(oneSecondTimers(intervalSpy)).toBe(1)
+ 
+     // …and it really advances: drive the armed 1s handlers forward.
+     nowSpy.mockReturnValue(T0 + 30_000)
+@@ -420,7 +416,7 @@ describe('AppLayout status-rule visibility', () => {
+     await flush()
+     await flush()
+ 
+-    expect(layout.output()).toContain('1m 30s')
++    expect(layout.output()).toContain('✓ 35s')
+   })
+ 
+   it('keeps the status rule on screen AND its clock advancing under a flow-layout sudo prompt', async () => {
+@@ -428,8 +424,8 @@ describe('AppLayout status-rule visibility', () => {
+ 
+     await flush()
+ 
+-    expect(layout.output()).toContain('1m 0s')
+-    expect(oneSecondTimers(intervalSpy)).toBe(2)
++    expect(layout.output()).toContain('✓ 5s')
++    expect(oneSecondTimers(intervalSpy)).toBe(1)
+   })
+ 
+   it('arms no clock under a floating model picker while the rule is at the top', async () => {
+@@ -445,6 +441,6 @@ describe('AppLayout status-rule visibility', () => {
+ 
+     await flush()
+ 
+-    expect(oneSecondTimers(intervalSpy)).toBe(2)
++    expect(oneSecondTimers(intervalSpy)).toBe(1)
+   })
+ })
 diff --git a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
-index b3c639846a..ae36b321b2 100644
+index ec13205649..487013c253 100644
 --- a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
 +++ b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
-@@ -1,5 +1,5 @@
- import React from 'react'
--import { describe, expect, it, vi } from 'vitest'
-+import { describe, expect, it } from 'vitest'
- 
- import { StatusRule } from '../components/appChrome.js'
+@@ -5,6 +5,15 @@ import { StatusRule } from '../components/appChrome.js'
  import { DEFAULT_THEME } from '../theme.js'
-@@ -20,20 +20,20 @@ const textContent = (node: ReactNodeLike): string => {
+ 
+ type ReactNodeLike = React.ReactNode
++type TestElement = React.ReactElement<{
++  backgroundColor?: string
++  children?: ReactNodeLike
++  color?: string
++  endedAt?: number
++  flexShrink?: number
++  onClick?: (event: { stopImmediatePropagation?: () => void }) => void
++  wrap?: string
++}>
+ 
+ const textContent = (node: ReactNodeLike): string => {
+   if (node === null || node === undefined || typeof node === 'boolean') {
+@@ -20,13 +29,13 @@ const textContent = (node: ReactNodeLike): string => {
    }
  
    if (React.isValidElement(node)) {
@@ -2777,129 +3093,127 @@ index b3c639846a..ae36b321b2 100644
  }
  
 -const findClickableWithText = (node: ReactNodeLike, needle: string): React.ReactElement | null => {
-+const findWaterTicker = (node: ReactNodeLike): React.ReactElement<{ busy?: boolean; color?: string }> | null => {
++const findClickableWithText = (node: ReactNodeLike, needle: string): TestElement | null => {
    if (node === null || node === undefined || typeof node === 'boolean') {
      return null
    }
- 
-   if (Array.isArray(node)) {
-     for (const child of node) {
--      const found = findClickableWithText(child, needle)
-+      const found = findWaterTicker(child)
- 
-       if (found) {
-         return found
-@@ -47,23 +47,23 @@ const findClickableWithText = (node: ReactNodeLike, needle: string): React.React
+@@ -47,16 +56,17 @@ const findClickableWithText = (node: ReactNodeLike, needle: string): React.React
      return null
    }
  
 -  if (typeof node.props.onClick === 'function' && textContent(node).includes(needle)) {
 -    return node
-+  const element = node as React.ReactElement<{ busy?: boolean; color?: string; children?: ReactNodeLike }>
++  const element = node as TestElement
 +
-+  if (typeof element.type === 'function' && element.type.name === 'WaterTicker') {
++  if (typeof element.props.onClick === 'function' && textContent(element).includes(needle)) {
 +    return element
    }
  
 -  return findClickableWithText(node.props.children, needle)
-+  return findWaterTicker(element.props.children)
++  return findClickableWithText(element.props.children, needle)
  }
  
 -// Find the innermost element whose own (direct) text content includes the
 -// needle. Used to assert the colour the notice text is rendered with.
 -const findElementWithText = (node: ReactNodeLike, needle: string): React.ReactElement | null => {
-+const findByName = (node: ReactNodeLike, name: string): React.ReactElement | null => {
++// Find the innermost element whose own text content includes the needle.
++const findElementWithText = (node: ReactNodeLike, needle: string): TestElement | null => {
    if (node === null || node === undefined || typeof node === 'boolean') {
      return null
    }
+@@ -79,13 +89,14 @@ const findElementWithText = (node: ReactNodeLike, needle: string): React.ReactEl
  
-   if (Array.isArray(node)) {
-     for (const child of node) {
--      const found = findElementWithText(child, needle)
-+      const found = findByName(child, name)
+   // Prefer the deepest matching element so we get the leaf <Text> that
+   // actually carries the colour, not an ancestor Box.
+-  const deeper = findElementWithText(node.props.children, needle)
++  const element = node as TestElement
++  const deeper = findElementWithText(element.props.children, needle)
  
-       if (found) {
-         return found
+   if (deeper) {
+     return deeper
+   }
+ 
+-  return textContent(node).includes(needle) ? node : null
++  return textContent(element).includes(needle) ? element : null
+ }
+ 
+ const baseProps = {
+@@ -219,7 +230,7 @@ describe('StatusRule session count click target', () => {
+     const clickableSessionCount = findClickableWithText(element, '1 session')
+ 
+     expect(clickableSessionCount).not.toBeNull()
+-    clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
++    clickableSessionCount!.props.onClick!({ stopImmediatePropagation: vi.fn() })
+     expect(openSwitcher).toHaveBeenCalledOnce()
+   })
+ 
+@@ -336,7 +347,7 @@ describe('StatusRule credits notice render priority', () => {
+     expect(noticeText?.props.wrap).toBe('truncate-end')
+ 
+     // Its container box yields first (flexShrink=1) so model stays visible.
+-    const findShrinkBoxContaining = (node: ReactNodeLike): React.ReactElement | null => {
++    const findShrinkBoxContaining = (node: ReactNodeLike): TestElement | null => {
+       if (!React.isValidElement(node)) {
+         if (Array.isArray(node)) {
+           for (const c of node) {
+@@ -351,14 +362,16 @@ describe('StatusRule credits notice render priority', () => {
+         return null
+       }
+ 
+-      if (node.props.flexShrink === 1 && textContent(node).includes('xxxxx') && node.type !== StatusRule) {
++      const element = node as TestElement
++
++      if (element.props.flexShrink === 1 && textContent(element).includes('xxxxx') && element.type !== StatusRule) {
+         // Prefer the closest shrink box that wraps the notice text.
+-        const deeper = findShrinkBoxContaining(node.props.children)
++        const deeper = findShrinkBoxContaining(element.props.children)
+ 
+-        return deeper ?? node
++        return deeper ?? element
+       }
+ 
+-      return findShrinkBoxContaining(node.props.children)
++      return findShrinkBoxContaining(element.props.children)
+     }
+ 
+     const shrinkBox = findShrinkBoxContaining(element)
+@@ -419,7 +432,7 @@ describe('StatusRule idle-since read-out', () => {
+   // The IdleSince component uses hooks, so it can't be invoked outside a
+   // renderer — assert on the element tree instead (same reason the duration
+   // tests don't check SessionDuration's text).
+-  const findComponentByName = (node: ReactNodeLike, name: string): React.ReactElement | null => {
++  const findComponentByName = (node: ReactNodeLike, name: string): TestElement | null => {
+     if (node === null || node === undefined || typeof node === 'boolean') {
+       return null
+     }
+@@ -440,11 +453,13 @@ describe('StatusRule idle-since read-out', () => {
+       return null
+     }
+ 
+-    if (typeof node.type === 'function' && node.type.name === name) {
+-      return node
++    const element = node as TestElement
++
++    if (typeof element.type === 'function' && element.type.name === name) {
++      return element
+     }
+ 
+-    return findComponentByName(node.props.children, name)
++    return findComponentByName(element.props.children, name)
+   }
+ 
+   it('shows time since the last final agent response when idle', () => {
 diff --git a/ui-tui/src/__tests__/appChromeStatusRuleDevCredits.test.tsx b/ui-tui/src/__tests__/appChromeStatusRuleDevCredits.test.tsx
-deleted file mode 100644
-index edf1859b2f..0000000000
+index edf1859b2f..b3e0e79a08 100644
 --- a/ui-tui/src/__tests__/appChromeStatusRuleDevCredits.test.tsx
-+++ /dev/null
-@@ -1,74 +0,0 @@
--import React from 'react'
--import { describe, expect, it, vi } from 'vitest'
--
--import { StatusRule } from '../components/appChrome.js'
--import type * as EnvModule from '../config/env.js'
--import { DEFAULT_THEME } from '../theme.js'
--
--// DEV_CREDITS_MODE is a module-load-time constant (config/env.ts reads
--// process.env.HERMES_DEV_CREDITS exactly once, at import). Mutating process.env
--// inside a test can't flip it after the module is loaded — so mock the module to
--// the dev-on value for this file. vitest hoists vi.mock above the imports, so
--// appChrome picks up the mocked flag. Lives in its own file so the override
--// stays scoped (the other StatusRule tests run with the real, dev-off value).
--vi.mock('../config/env.js', async importOriginal => {
--  const actual = await importOriginal<typeof EnvModule>()
--
--  return { ...actual, DEV_CREDITS_MODE: true }
++++ b/ui-tui/src/__tests__/appChromeStatusRuleDevCredits.test.tsx
+@@ -71,4 +71,4 @@ describe('StatusRule dev-credits banner (HERMES_DEV_CREDITS on)', () => {
+     // … and the Δ spend segment renders (12345 micros → 1.2¢).
+     expect(rendered).toContain('Δ')
+   })
 -})
--
--type ReactNodeLike = React.ReactNode
--
--const textContent = (node: ReactNodeLike): string => {
--  if (node === null || node === undefined || typeof node === 'boolean') {
--    return ''
--  }
--
--  if (typeof node === 'string' || typeof node === 'number') {
--    return String(node)
--  }
--
--  if (Array.isArray(node)) {
--    return node.map(textContent).join('')
--  }
--
--  if (React.isValidElement(node)) {
--    return textContent(node.props.children)
--  }
--
--  return ''
--}
--
--const baseProps = {
--  bgCount: 0,
--  busy: false,
--  cols: 100,
--  cwdLabel: '~/repo',
--  liveSessionCount: 0,
--  model: 'opus-4.8',
--  sessionStartedAt: null,
--  status: 'ready',
--  statusColor: DEFAULT_THEME.color.ok,
--  t: DEFAULT_THEME,
--  turnStartedAt: null,
--  usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
--  voiceLabel: ''
--}
--
--describe('StatusRule dev-credits banner (HERMES_DEV_CREDITS on)', () => {
--  it('keeps the dev-credits banner visible alongside a notice', () => {
--    const element = StatusRule({
--      ...baseProps,
--      notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: '⚠ 90% used' },
--      usage: { ...baseProps.usage, dev_credits_spent_micros: 12_345 }
--    })
--
--    const rendered = textContent(element)
--
--    // The notice and the dev banner coexist …
--    expect(rendered).toContain('⚠ 90% used')
--    expect(rendered).toContain('(dev credits)')
--    // … and the Δ spend segment renders (12345 micros → 1.2¢).
--    expect(rendered).toContain('Δ')
--  })
--})
++})
+\ No newline at end of file
 diff --git a/ui-tui/src/__tests__/createGatewayEventHandler.test.ts b/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
 index 404aac3860..4f2c7402b9 100644
 --- a/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
@@ -3161,13 +3475,29 @@ index 0000000000..44f79a8ee5
 +})
 diff --git a/ui-tui/src/__tests__/sessionExit.test.ts b/ui-tui/src/__tests__/sessionExit.test.ts
 new file mode 100644
-index 0000000000..03d682ad01
+index 0000000000..a8ed1ec2de
 --- /dev/null
 +++ b/ui-tui/src/__tests__/sessionExit.test.ts
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,78 @@
 +import { describe, expect, it, vi } from 'vitest'
 +
-+import { emitSessionIdAtExit, flushExitSessionId, rememberExitSessionId } from '../lib/sessionExit.js'
++import {
++  durableExitSessionId,
++  emitSessionIdAtExit,
++  flushExitSessionId,
++  rememberExitSessionId
++} from '../lib/sessionExit.js'
++
++describe('durableExitSessionId', () => {
++  it('returns only a durable stored session id', () => {
++    expect(durableExitSessionId('20260809_133043_0bb6cb')).toBe('20260809_133043_0bb6cb')
++  })
++
++  it('suppresses missing or empty ids instead of falling back to the gateway sid', () => {
++    expect(durableExitSessionId(undefined)).toBeNull()
++    expect(durableExitSessionId('')).toBeNull()
++  })
++})
 +
 +describe('emitSessionIdAtExit', () => {
 +  it('emits the session id with a resume hint', () => {
@@ -3239,6 +3569,54 @@ index 1a5334eb13..3a21174b94 100644
        compressions: true,
        voice: true,
        bg: true,
+diff --git a/ui-tui/src/__tests__/subscriptionOverlay.test.tsx b/ui-tui/src/__tests__/subscriptionOverlay.test.tsx
+index 397520c7ed..1de8a99adf 100644
+--- a/ui-tui/src/__tests__/subscriptionOverlay.test.tsx
++++ b/ui-tui/src/__tests__/subscriptionOverlay.test.tsx
+@@ -70,10 +70,12 @@ function mount(
+ /** Render a SubscriptionOverlay to a string via renderSync + PassThrough. */
+ function render(overlay: SubscriptionOverlayState): string {
+   const mounted = mount(overlay)
+-  const output = mounted.output()
++
++  // Non-TTY Ink writes its final frame during unmount. Read after cleanup,
++  // otherwise a synchronous one-shot render observes the pre-flush buffer.
+   mounted.cleanup()
+ 
+-  return output
++  return mounted.output()
+ }
+ 
+ const TIERS = [
+@@ -602,13 +604,13 @@ describe('SubscriptionOverlay — upgrade response mapping', () => {
+       const result = { message: 'Upgraded to Ultra.', ok: true, pendingTierId: 'ultra' }
+       const mounted = mount(at('result', subscriber(), { ctx: { ...ctx, refreshState }, result }))
+ 
+-      expect(mounted.output()).toContain('Applying…')
++      expect(render(at('result', subscriber(), { ctx: { ...ctx, refreshState }, result }))).toContain('Applying…')
+       await vi.advanceTimersByTimeAsync(2000)
+       mounted.rerender()
++      mounted.cleanup()
+       expect(refreshState).toHaveBeenCalledTimes(1)
+       expect(mounted.output()).toContain('Done')
+       expect(mounted.output()).toContain('Upgraded to Ultra.')
+-      mounted.cleanup()
+     } finally {
+       vi.useRealTimers()
+     }
+@@ -624,11 +626,11 @@ describe('SubscriptionOverlay — upgrade response mapping', () => {
+ 
+       await vi.advanceTimersByTimeAsync(30_000)
+       mounted.rerender()
++      mounted.cleanup()
+       expect(refreshState).toHaveBeenCalledTimes(15)
+       expect(mounted.output()).toContain('Still applying')
+       expect(mounted.output()).toContain('refresh in a moment')
+       expect(mounted.output()).not.toContain('Could not complete')
+-      mounted.cleanup()
+     } finally {
+       vi.useRealTimers()
+     }
 diff --git a/ui-tui/src/__tests__/tps.test.ts b/ui-tui/src/__tests__/tps.test.ts
 new file mode 100644
 index 0000000000..abb1f1485f
@@ -3443,37 +3821,48 @@ index 0000000000..abb1f1485f
 +})
 diff --git a/ui-tui/src/__tests__/waterPulse.test.ts b/ui-tui/src/__tests__/waterPulse.test.ts
 new file mode 100644
-index 0000000000..555ee57447
+index 0000000000..cbc27e2455
 --- /dev/null
 +++ b/ui-tui/src/__tests__/waterPulse.test.ts
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,142 @@
 +import { describe, expect, it } from 'vitest'
 +
 +import { $wavePulse, pulseWave } from '../app/wavePulseStore.js'
 +import {
 +  freshWavePeaks,
-+  maxPulseMs,
-+  pulseFlightMs,
++  pointedCrestOffset,
++  quantizeWaterHeight,
++  splashClockAt,
 +  WATER_CELL_COUNT,
++  WATER_FRAME_MS,
++  WATER_SPLASH_MS,
 +  waterFrame,
-+  waterTickMs
++  waterFrameStep,
++  waterSplashLift
 +} from '../components/appChrome.js'
 +
-+// Dots in the top two Braille rows of both columns (rows 0-1). A cell whose
-+// water surface is at row <= 1 in both columns must carry all of these bits.
-+const TOP_ROWS_BITS = 0x01 | 0x02 | 0x08 | 0x10
-+// Left-column top-row dot (row 0, column 0).
-+const LEFT_TOP_BIT = 0x01
-+
-+const cellBits = (char: string): number => char.codePointAt(0)! - 0x2800
-+
 +describe('water drift cadence', () => {
-+  it('scales with token throughput, clamped to a safe band', () => {
-+    expect(waterTickMs(0)).toBe(45)
-+    expect(waterTickMs(15)).toBe(30)
-+    expect(waterTickMs(30)).toBe(30)
-+    expect(waterTickMs(200)).toBe(30)
-+    expect(waterTickMs(-5)).toBe(45)
++  it('adds a narrow crest needle without moving troughs or broad shoulders', () => {
++    expect(pointedCrestOffset(0.8)).toBe(0)
++    expect(pointedCrestOffset(-1)).toBeCloseTo(-0.25)
++    expect(Math.abs(pointedCrestOffset(-0.5))).toBeLessThan(0.01)
++  })
++
++  it('holds the previous Braille row inside a small quantization deadband', () => {
++    expect(quantizeWaterHeight(2.49)).toBe(2)
++    expect(quantizeWaterHeight(2.51)).toBe(3)
++    expect(quantizeWaterHeight(2.6, 2)).toBe(2)
++    expect(quantizeWaterHeight(2.7, 2)).toBe(3)
++    expect(quantizeWaterHeight(2.4, 3)).toBe(3)
++    expect(quantizeWaterHeight(2.3, 3)).toBe(2)
++  })
++
++  it('keeps one render cadence while TPS changes phase velocity', () => {
++    expect(WATER_FRAME_MS).toBe(60)
++    expect(waterFrameStep(-5)).toBeCloseTo(4 / 3)
++    expect(waterFrameStep(0)).toBeCloseTo(4 / 3)
++    expect(waterFrameStep(15)).toBe(2)
++    expect(waterFrameStep(200)).toBe(2)
 +  })
 +
 +  it('is deterministic per frame and advances with the frame', () => {
@@ -3489,16 +3878,63 @@ index 0000000000..555ee57447
 +})
 +
 +describe('water splash physics', () => {
-+  it('flight time grows with the square root of the peak height', () => {
-+    expect(pulseFlightMs(1)).toBe(300)
-+    expect(pulseFlightMs(4)).toBe(600)
-+    expect(pulseFlightMs(0)).toBe(0)
-+    expect(pulseFlightMs(-2)).toBe(0)
++  it('derives splash lifetime from wall time and deactivates at the exact boundary', () => {
++    expect(splashClockAt(1_000, 1_000)).toBe(0)
++    expect(splashClockAt(1_000, 1_899)).toBe(899)
++    expect(splashClockAt(1_000, 1_900)).toBe(-1)
++    expect(splashClockAt(1_000, 2_500)).toBe(-1)
 +  })
 +
-+  it('a splash lasts as long as its tallest droplet', () => {
-+    expect(maxPulseMs([1, 4])).toBe(600)
-+    expect(maxPulseMs([])).toBe(0)
++  it('starts as a localized impact and then sends a symmetric wake outward', () => {
++    const peaks = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 3)
++    const origin = WATER_CELL_COUNT
++    const early = { clock: 180, origin, peaks }
++    const travelling = { clock: 480, origin, peaks }
++
++    expect(waterSplashLift(origin, WATER_CELL_COUNT * 2, early)).toBeGreaterThan(
++      waterSplashLift(0, WATER_CELL_COUNT * 2, early)
++    )
++    expect(waterSplashLift(origin + 15, WATER_CELL_COUNT * 2, travelling)).toBeGreaterThan(
++      waterSplashLift(origin, WATER_CELL_COUNT * 2, travelling)
++    )
++    expect(waterSplashLift(origin - 15, WATER_CELL_COUNT * 2, travelling)).toBeCloseTo(
++      waterSplashLift(origin + 15, WATER_CELL_COUNT * 2, travelling)
++    )
++    expect(
++      waterSplashLift(origin, WATER_CELL_COUNT * 2, {
++        clock: WATER_SPLASH_MS,
++        origin,
++        peaks
++      })
++    ).toBe(0)
++  })
++
++  it('applies the initial impact locally instead of lifting the whole raster', () => {
++    const peaks = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 3)
++    const drift = waterFrame(0)
++
++    const impact = waterFrame(0, {
++      clock: 180,
++      origin: WATER_CELL_COUNT,
++      peaks
++    })
++
++    expect(impact[0]).toBe(drift[0])
++    expect(impact[12]).not.toBe(drift[12])
++    expect(impact[24]).toBe(drift[24])
++  })
++
++  it('builds a deterministic spatially correlated peak field from the pulse seed', () => {
++    const first = freshWavePeaks(50, 11)
++    const replay = freshWavePeaks(50, 11)
++    const nextPulse = freshWavePeaks(50, 12)
++
++    expect(first).toEqual(replay)
++    expect(first).not.toEqual(nextPulse)
++
++    for (let index = 1; index < first.length; index += 1) {
++      expect(Math.abs(first[index]! - first[index - 1]!)).toBeLessThan(0.8)
++    }
 +  })
 +
 +  it('fresh peaks stay inside the splash range and cover every pixel', () => {
@@ -3512,53 +3948,13 @@ index 0000000000..555ee57447
 +    }
 +  })
 +
-+  it('splashes are high-contrast: short ripples AND tall towers in one burst', () => {
-+    // Square-biased distribution: in 100 draws both ends must appear —
-+    // droplets that barely break the surface and droplets that reach the
-+    // top of the cell. (P(miss either end) < 1e-4.)
-+    const peaks = freshWavePeaks(100)
-+
-+    expect(Math.min(...peaks)).toBeLessThan(1.5)
-+    expect(Math.max(...peaks)).toBeGreaterThan(3)
-+  })
-+
-+  it('lifts the surface to the top rows at the midpoint of each drop flight', () => {
++  it('returns exactly to the drifting surface when the wake has settled', () => {
 +    const peaks = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 3.2)
-+    const frame = waterFrame(0, { peaks, clock: pulseFlightMs(3.2) / 2 })
-+
-+    for (const char of frame) {
-+      // Surface at row <= 1 in both columns -> the top two rows' dots are set.
-+      expect(cellBits(char) & TOP_ROWS_BITS).toBe(TOP_ROWS_BITS)
-+    }
-+  })
-+
-+  it('returns exactly to the drifting surface once every drop has landed', () => {
-+    const peaks = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 3.2)
++    const staleSurface = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 0)
 +    const drift = waterFrame(3)
 +
-+    expect(waterFrame(3, { peaks, clock: maxPulseMs(peaks) })).toBe(drift)
-+    expect(waterFrame(3, { peaks, clock: maxPulseMs(peaks) + 1000 })).toBe(drift)
-+  })
-+
-+  it('a tall drop is still airborne after a short drop has landed', () => {
-+    const peaks = [3.2, 3.2, 1, 1]
-+    // clock = exact landing time of the short drop: it is back on the drift
-+    // surface while the tall drop is still climbing (tau ~= 0.56 > 0.5 -> past
-+    // its peak), so the two cells diverge from the drift-only frame.
-+    const drift = waterFrame(0)
-+    const frame = waterFrame(0, { peaks, clock: pulseFlightMs(1) })
-+
-+    expect(frame[0]).not.toBe(drift[0])
-+    expect(frame[1]).toBe(drift[1])
-+    expect(frame.slice(2)).toBe(drift.slice(2))
-+  })
-+
-+  it('reaches the top of the cell in the splashing column', () => {
-+    // Left column splashing (peak 3.2 at mid-flight), right column untouched:
-+    // the left column must fill its top row (dot bit 0x01).
-+    const frame = waterFrame(0, { peaks: [3.2, 0], clock: pulseFlightMs(3.2) / 2 })
-+
-+    expect(cellBits(frame[0]!) & LEFT_TOP_BIT).toBe(LEFT_TOP_BIT)
++    expect(waterFrame(3, { peaks, clock: WATER_SPLASH_MS }, staleSurface)).toBe(drift)
++    expect(waterFrame(3, { peaks, clock: WATER_SPLASH_MS + 1000 }, staleSurface)).toBe(drift)
 +  })
 +})
 +
@@ -3703,7 +4099,7 @@ index 55a31f97dd..373e047c01 100644
            patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
          }
 diff --git a/ui-tui/src/app/interfaces.ts b/ui-tui/src/app/interfaces.ts
-index c448df0259..3f14472aec 100644
+index 4583ccfe60..de4679e723 100644
 --- a/ui-tui/src/app/interfaces.ts
 +++ b/ui-tui/src/app/interfaces.ts
 @@ -51,6 +51,8 @@ export interface BatteryInfo {
@@ -3715,14 +4111,6 @@ index c448df0259..3f14472aec 100644
  export type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
  
  // Credits/usage notice surfaced in the status bar. Shape is snake_case to
-@@ -586,6 +588,7 @@ export interface AppLayoutStatusProps {
-   lastTurnEndedAt: null | number
-   sessionStartedAt: null | number
-   showStickyPrompt: boolean
-+
-   statusColor: string
-   stickyPrompt: string
-   turnStartedAt: null | number
 diff --git a/ui-tui/src/app/submissionCore.ts b/ui-tui/src/app/submissionCore.ts
 index aa6cd98db6..0504513f9b 100644
 --- a/ui-tui/src/app/submissionCore.ts
@@ -3851,7 +4239,7 @@ index fe7a6674da..85c1a0c193 100644
    statusBar: 'top',
    streaming: true,
 diff --git a/ui-tui/src/app/useMainApp.ts b/ui-tui/src/app/useMainApp.ts
-index 283ebe5a11..2c77263148 100644
+index 0756c2fd0e..7a8ba7b03b 100644
 --- a/ui-tui/src/app/useMainApp.ts
 +++ b/ui-tui/src/app/useMainApp.ts
 @@ -12,7 +12,7 @@ import { useStore } from '@nanostores/react'
@@ -3867,7 +4255,7 @@ index 283ebe5a11..2c77263148 100644
  import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
  import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
  import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
-+import { rememberExitSessionId } from '../lib/sessionExit.js'
++import { durableExitSessionId, rememberExitSessionId } from '../lib/sessionExit.js'
  import { terminalParityHints } from '../lib/terminalParity.js'
  import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
  import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
@@ -3886,14 +4274,15 @@ index 283ebe5a11..2c77263148 100644
  const statusColorOf = (status: string, t: { error: string; muted: string; ok: string; warn: string }) => {
    if (status === 'ready') {
      return t.ok
-@@ -510,8 +519,18 @@ export function useMainApp(gw: GatewayClient) {
+@@ -510,8 +519,19 @@ export function useMainApp(gw: GatewayClient) {
    const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
  
    const die = useCallback(() => {
 +    const ui = getUiState()
-+    // The UI `sid` is the gateway's internal 8-hex session key; the resumable
-+    // handle is the durable stored_session_id reported in session.info.
-+    const exitSid = ui.info?.stored_session_id ?? ui.sid
++    // Only the durable stored_session_id is a valid resume handle. The UI
++    // `sid` is an internal 8-hex gateway key; if session.info has not arrived,
++    // stay silent rather than printing a known-invalid `hermes --resume` line.
++    const exitSid = durableExitSessionId(ui.info?.stored_session_id)
      gw.kill('app.die')
      exit()
 +    // Remember the resumable id; entry.tsx's process.on('exit') handler resets
@@ -3905,6 +4294,20 @@ index 283ebe5a11..2c77263148 100644
      // Ink's exit() calls unmount() which resets terminal modes but does NOT
      // call process.exit().  Without an explicit exit the Node process stays
      // alive (stdin listener keeps the event loop open), so the process.on('exit')
+diff --git a/ui-tui/src/app/useSessionLifecycle.ts b/ui-tui/src/app/useSessionLifecycle.ts
+index 5839ecdc69..777d6055b3 100644
+--- a/ui-tui/src/app/useSessionLifecycle.ts
++++ b/ui-tui/src/app/useSessionLifecycle.ts
+@@ -444,8 +444,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
+       newSession,
+       resetSession,
+       resetVisibleHistory,
+-      resumeById,
+-      trimTail
++      resumeById
+     ]
+   )
+ }
 diff --git a/ui-tui/src/app/wavePulseStore.ts b/ui-tui/src/app/wavePulseStore.ts
 new file mode 100644
 index 0000000000..6f960d3fc5
@@ -3931,7 +4334,7 @@ index 0000000000..6f960d3fc5
 +  $wavePulse.set($wavePulse.get() + 1)
 +}
 diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
-index 1ff100f6d1..898a24d1b4 100644
+index 93da0fdaed..3a646475d7 100644
 --- a/ui-tui/src/components/appChrome.tsx
 +++ b/ui-tui/src/components/appChrome.tsx
 @@ -6,7 +6,9 @@ import unicodeSpinners from 'unicode-animations'
@@ -3968,7 +4371,7 @@ index 1ff100f6d1..898a24d1b4 100644
      compressions: w >= 80,
      voice: w >= 84,
      bg: w >= 88,
-@@ -436,7 +441,198 @@ const shortModelLabel = (model: string) =>
+@@ -436,7 +441,357 @@ const shortModelLabel = (model: string) =>
      .trim()
  
  const modelLabel = (model: string, effort?: string, fast?: boolean) =>
@@ -3989,46 +4392,84 @@ index 1ff100f6d1..898a24d1b4 100644
 +// All non-wave status metrics (separators, provider·model, bg count, context,
 +// TPS) share ONE fixed pale gray so the row stays legible on both light and
 +// dark terminals — theme-independent. Tune this single hex to taste.
-+const STATUS_METRIC_GRAY = '#AEB4BA'
++// Muted gray for the whole status rule (wave base, separators, model,
++// context, TPS). Darkened from #AEB4BA after dogfood: the old gray read
++// brighter than "muted" against the dark strip.
++const STATUS_METRIC_GRAY = '#6B7280'
 +// 16 FPS is quick enough to read as fluid in Ink while staying well below a
 +// terminal-wide 60 FPS repaint loop. The splash clock steps at this fixed
 +// physics cadence regardless of token throughput.
-+const WATER_FRAME_MS = 60
-+// Drift cadence scales with live token throughput: a brisk 45ms pace even at
-+// zero TPS (reasoning, between tool calls), full speed from ~15 t/s up. The
-+// floor keeps the wave visibly moving through a whole turn. The splash
-+// (tool-call pulse) runs on its own fixed cadence on top, so a tool call
-+// pausing the token stream never freezes or jumps the wave. Pure + clamped
-+// for tests.
-+export const waterTickMs = (tps: number): number =>
-+  Math.max(30, 45 - Math.min(Math.max(tps, 0), 15))
-+// Splash droplets launch from the drifting surface; each has a random peak
-+// height above it. The range is wide and the distribution is square-biased
-+// toward the short end, so a splash reads as high contrast: most droplets
-+// barely break the surface (one row) while a few shoot to the top of the
-+// cell — small ripples next to tall towers.
++export const WATER_FRAME_MS = 60
++
++// Keep Ink on one stable repaint cadence. TPS changes phase velocity instead
++// of tearing down and re-arming the interval whenever the EMA moves. These
++// steps preserve the old visual speed: 45ms/frame at zero TPS and 30ms/frame
++// from 15 t/s upward, expressed as fractional frames on the 60ms clock.
++export const waterFrameStep = (tps: number): number => {
++  const clampedTps = Math.min(Math.max(tps, 0), 15)
++
++  return WATER_FRAME_MS / (45 - clampedTps)
++}
++
++// A seeded, correlated field gives each impact a slightly different texture
++// without independent per-pixel noise.
 +const PEAK_MIN = 1.0
 +const PEAK_MAX = 3.6
-+// Flight time under gravity scales with the square root of the peak height
-+// (T = 2√(2h/g)): a tall drop hangs and drifts down slowly while a short one
-+// lands almost immediately — the high-slow / low-fast fall that reads as
-+// physics. The tallest splash (~3.6 rows) lands at ~570ms, the shortest at
-+// ~300ms.
-+const FLIGHT_K = 300
 +
-+/** Milliseconds a droplet of the given peak height stays in the air. */
-+export const pulseFlightMs = (rise: number): number => FLIGHT_K * Math.sqrt(Math.max(0, rise))
++export const WATER_SPLASH_MS = 900
 +
-+/** Random droplet peaks, one per water pixel (2 per terminal cell). */
-+export const freshWavePeaks = (count: number = WATER_CELL_COUNT * 2): number[] =>
-+  Array.from(
-+    { length: count },
-+    () => PEAK_MIN + (PEAK_MAX - PEAK_MIN) * Math.pow(Math.random(), 2)
++export const splashClockAt = (startedAt: number, now: number): number => {
++  const elapsed = Math.max(0, now - startedAt)
++
++  return elapsed >= WATER_SPLASH_MS ? -1 : elapsed
++}
++
++const seededUnit = (seed: number): (() => number) => {
++  let state = seed | 0
++
++  return () => {
++    state = (state + 0x6d2b79f5) | 0
++    let value = state
++    value = Math.imul(value ^ (value >>> 15), value | 1)
++    value ^= value + Math.imul(value ^ (value >>> 7), value | 61)
++
++    return ((value ^ (value >>> 14)) >>> 0) / 4294967296
++  }
++}
++
++/**
++ * Deterministic, spatially correlated droplet peaks. Sparse seeded control
++ * points are interpolated across the raster, so each tool pulse is irregular
++ * without making neighboring Braille columns flicker independently.
++ */
++export const freshWavePeaks = (
++  count: number = WATER_CELL_COUNT * 2,
++  seed = 0
++): number[] => {
++  if (count <= 0) {
++    return []
++  }
++
++  const random = seededUnit(seed)
++  const controlSpan = 6
++
++  const controls = Array.from(
++    { length: Math.ceil((count - 1) / controlSpan) + 1 },
++    () => PEAK_MIN + (PEAK_MAX - PEAK_MIN) * Math.pow(random(), 2)
 +  )
 +
-+/** When every droplet of this splash has landed (splash duration). */
-+export const maxPulseMs = (peaks: readonly number[]): number =>
-+  peaks.reduce((max, peak) => Math.max(max, pulseFlightMs(peak)), 0)
++  return Array.from({ length: count }, (_, pixel) => {
++    const control = pixel / controlSpan
++    const left = Math.floor(control)
++    const mix = control - left
++    const start = controls[left] ?? PEAK_MIN
++    const end = controls[left + 1] ?? start
++    const easedMix = mix * mix * (3 - 2 * mix)
++
++    return start + (end - start) * easedMix
++  })
++}
++
 +
 +const BRAILLE_DOTS = [
 +  [0x01, 0x08],
@@ -4040,53 +4481,138 @@ index 1ff100f6d1..898a24d1b4 100644
 +// The base surface: the classic drifting wave (row 0 = full cell, row 4 =
 +// dry). Pure in `frame`, so the drift is deterministic and phase-continuous
 +// across turns — the frame counter never resets.
++//
++// Keep the proven 2.4 baseline and monochrome color. A fifth-power negative
++// lobe adds a narrow needle only at the fundamental's crest; broad shoulders
++// and positive troughs stay where they were, avoiding full-height plateaus.
++export const pointedCrestOffset = (fundamental: number): number =>
++  fundamental < 0 ? -0.25 * Math.pow(-fundamental, 5) : 0
++
 +const driftSurface = (pixel: number, pixelCount: number, frame: number): number => {
 +  const x = pixel / (pixelCount - 1)
 +  const phase = frame * 0.105
++  const theta = x * Math.PI * 2 * 1.25 + phase
++  const fundamental = Math.sin(theta)
 +  const source = 0.52 + 0.18 * Math.sin(phase * 0.31)
 +  const distance = Math.abs(x - source)
 +
 +  return (
 +    2.4 +
-+    0.9 * Math.sin(x * Math.PI * 2 * 1.25 + phase) +
++    0.9 * fundamental +
++    pointedCrestOffset(fundamental) +
 +    0.45 * Math.sin(x * Math.PI * 2 * 3.7 - phase * 0.73) +
++    // Third harmonic phase-locked to the fundamental: lifts the crest into a
++    // pointed spike (and pushes the trough down) instead of a flat-topped
++    // mesa — the peak rounds to the top row only where the crest actually
++    // breaks, so the wave reads as sharp whitecaps, not a plateau.
++    0.5 * Math.sin(3 * theta - Math.PI) +
 +    0.85 * Math.sin(distance * 30 - phase * 2.1) * Math.exp(-distance * 5.5)
 +  )
 +}
 +
 +export interface WaterSplash {
 +  peaks: readonly number[]
-+  /** Elapsed splash time in ms; droplets are fully landed at maxPulseMs(peaks). */
++  /** Horizontal impact point in Braille sub-pixels. Defaults to the center. */
++  origin?: number
++  /** Elapsed splash time in ms; the wake is settled at WATER_SPLASH_MS. */
 +  clock: number
 +}
 +
-+export const waterFrame = (frame: number, splash?: WaterSplash): string => {
++/**
++ * Lift contributed by a localized impact and its two outward-travelling wakes.
++ * The envelope is exactly zero at both ends so a completed splash returns to
++ * the unmodified drifting surface without a residual tremor.
++ */
++export const waterSplashLift = (
++  pixel: number,
++  pixelCount: number,
++  splash: WaterSplash
++): number => {
++  if (splash.clock <= 0 || splash.clock >= WATER_SPLASH_MS || pixelCount <= 0) {
++    return 0
++  }
++
++  const progress = splash.clock / WATER_SPLASH_MS
++  const origin = splash.origin ?? (pixelCount - 1) / 2
++  const distance = Math.abs(pixel - origin)
++  const peak = splash.peaks[pixel] ?? PEAK_MIN
++  const texture = 0.82 + 0.18 * Math.max(0, Math.min(1, (peak - PEAK_MIN) / (PEAK_MAX - PEAK_MIN)))
++
++  // A narrow initial crown rises and damps quickly at the point of impact.
++  const impactRise = Math.sin(Math.PI * Math.min(1, splash.clock / 360))
++
++  const impact =
++    3 * impactRise * Math.exp(-3.2 * progress) * Math.exp(-(distance * distance) / (2 * 2.4 * 2.4))
++
++  // The displaced energy becomes a pair of broad fronts moving left/right.
++  const front = progress * pixelCount * 0.58
++  const frontDistance = distance - front
++
++  const wake =
++    2.2 *
++    Math.sin(Math.PI * progress) *
++    Math.exp(-(frontDistance * frontDistance) / (2 * 2.2 * 2.2))
++
++  return (impact + wake) * texture
++}
++
++const WATER_ROW_DEADBAND = 0.15
++
++export const quantizeWaterHeight = (height: number, previous?: number): number => {
++  const clamped = Math.max(0, Math.min(4, height))
++  const nearest = Math.round(clamped)
++
++  if (previous === undefined) {
++    return nearest
++  }
++
++  const stable = Math.max(0, Math.min(4, Math.round(previous)))
++
++  if (nearest > stable && clamped < stable + 0.5 + WATER_ROW_DEADBAND) {
++    return stable
++  }
++
++  if (nearest < stable && clamped > stable - 0.5 - WATER_ROW_DEADBAND) {
++    return stable
++  }
++
++  return nearest
++}
++
++export const waterSurface = (
++  frame: number,
++  splash?: WaterSplash,
++  previous: readonly number[] = []
++): number[] => {
 +  const pixelCount = WATER_CELL_COUNT * 2
++  // A settled impact is an exact physics boundary: discard hysteresis history
++  // so the final glyphs cannot retain a stale lifted row while idle.
++  const stablePrevious = splash && splash.clock >= WATER_SPLASH_MS ? [] : previous
 +  const surface: number[] = []
 +
 +  for (let pixel = 0; pixel < pixelCount; pixel += 1) {
 +    let height = driftSurface(pixel, pixelCount, frame)
 +
 +    if (splash) {
-+      const peak = splash.peaks[pixel] ?? 0
-+      const flight = pulseFlightMs(peak)
-+      const tau = splash.clock >= flight ? 1 : splash.clock / flight
-+      // Parabola under gravity: rises from the drifting surface to `peak` at
-+      // τ=0.5, lands back softly at τ=1 (the descent eases out as the droplet
-+      // touches down).
-+      height -= 4 * peak * tau * (1 - tau)
++      height -= waterSplashLift(pixel, pixelCount, splash)
 +    }
 +
-+    // Row 4 leaves both dot columns empty. Letting troughs reach it creates
-+    // a genuine dry gap instead of flattening every low point to ⣤.
-+    surface.push(Math.max(0, Math.min(4, Math.round(height))))
++    // Row 4 leaves both dot columns empty. The previous row adds a narrow
++    // deadband around half-row thresholds, suppressing one-frame glyph pops.
++    surface.push(quantizeWaterHeight(height, stablePrevious[pixel]))
 +  }
 +
-+  return Array.from({ length: WATER_CELL_COUNT }, (_, cell) => {
++  return surface
++}
++
++const waterFrameFromSurface = (surface: readonly number[]): string =>
++  Array.from({ length: WATER_CELL_COUNT }, (_, cell) => {
++    const left = surface[cell * 2] ?? 4
++    const right = surface[cell * 2 + 1] ?? 4
 +    let dots = 0
 +
 +    for (let column = 0; column < 2; column += 1) {
-+      const fillFrom = surface[cell * 2 + column] ?? 4
++      const fillFrom = column === 0 ? left : right
 +
 +      for (let row = fillFrom; row < 4; row += 1) {
 +        dots |= BRAILLE_DOTS[row]![column]!
@@ -4094,81 +4620,117 @@ index 1ff100f6d1..898a24d1b4 100644
 +    }
 +
 +    return String.fromCodePoint(0x2800 + dots)
-+  }).join('')
-+}
++  })
++    .join('')
 +
-+function WaterTicker({ busy, color }: { busy: boolean; color: string }) {
-+  // The wave drifts while a turn is busy at a token-throughput cadence (the
-+  // EMA-smoothed TPS target glides the pace instead of snapping it), and each
-+  // tool call layers one splash on top: the gateway bumps $wavePulse on every
-+  // `tool.start`, this component re-rolls random droplet peaks and restarts
-+  // the splash clock. The splash runs at a fixed physics cadence, so a tool
-+  // call pausing the token stream only slows the drift. Between turns the
-+  // drift freezes on its last frame; the status rule stays mounted so
-+  // model/context columns never shift.
++export const waterFrame = (
++  frame: number,
++  splash?: WaterSplash,
++  previous?: readonly number[]
++): string => waterFrameFromSurface(waterSurface(frame, splash, previous))
++
++// The wave renders in the SAME muted gray as the rest of the status rule —
++// no accent color at all (user: "giữ màu đều đi, cùng màu với statusline").
++// The spikiness of the drift is pure silhouette now: tall crest cells read
++// as dark braille mass against the empty row above them.
++const WAVE_COLOR = STATUS_METRIC_GRAY
++
++function WaterTicker({ busy }: { busy: boolean }) {
++  // One stable 60ms clock drives a TPS-scaled phase while busy. Every
++  // `tool.start` seeds a localized impact and two travelling wakes. Between
++  // turns the drift freezes on its last frame; the status rule stays mounted
++  // so model/context columns never shift.
 +  const pulse = useStore($wavePulse)
 +  const tps = useStore($tpsTarget)
-+  const tickMs = waterTickMs(tps)
 +  const [driftFrame, setDriftFrame] = useState(0)
 +  const [peaks, setPeaks] = useState<number[]>(() => freshWavePeaks())
++  const [origin, setOrigin] = useState((WATER_CELL_COUNT * 2 - 1) / 2)
 +  // -1 = no splash in flight.
 +  const [splashClock, setSplashClock] = useState(-1)
-+  const peaksRef = useRef(peaks)
-+  peaksRef.current = peaks
++  const frameStepRef = useRef(waterFrameStep(tps))
++  const busyRef = useRef(busy)
++  const splashStartedAtRef = useRef<number | null>(null)
++  const previousSurfaceRef = useRef<number[]>([])
++  const lastSplashClockRef = useRef(-1)
 +  const splashActive = splashClock >= 0
++  const animationActive = busy || splashActive
 +
-+  // New tool call → fresh splash droplets. (Tool calls only happen mid-turn,
-+  // so this also implies busy.)
++  // Timer callbacks only consume committed render state. Keeping these writes
++  // in effects avoids leaking values from a React render that gets discarded.
++  useEffect(() => {
++    frameStepRef.current = waterFrameStep(tps)
++  }, [tps])
++
++  useEffect(() => {
++    busyRef.current = busy
++  }, [busy])
++
++  // New tool call → a repeatable impact origin + correlated texture.
 +  useEffect(() => {
 +    if (pulse <= 0) {
 +      return
 +    }
 +
-+    setPeaks(freshWavePeaks())
++    const random = seededUnit(pulse)
++    const pixelCount = WATER_CELL_COUNT * 2
++    setPeaks(freshWavePeaks(pixelCount, pulse))
++    setOrigin(Math.round((0.2 + 0.6 * random()) * (pixelCount - 1)))
++    splashStartedAtRef.current = Date.now()
 +    setSplashClock(0)
 +  }, [pulse])
 +
-+  // Drift ticker: TPS-driven cadence while busy. Re-arms on every tps change
-+  // (the target is EMA-smoothed, so the pace glides); the frame counter never
-+  // resets, so a pace change keeps the wave phase continuous. The wave
-+  // freezes on its last frame the moment the turn ends.
++  // One interval owns both drift and impact updates. Starting/retriggering a
++  // splash while busy does not re-arm it; wall time gives every impact its full
++  // lifetime regardless of where it lands inside the current 60ms cadence.
 +  useEffect(() => {
-+    if (!busy) {
-+      return
-+    }
-+
-+    const id = setInterval(() => setDriftFrame(current => current + 1), tickMs)
-+
-+    return () => clearInterval(id)
-+  }, [busy, tickMs])
-+
-+  // Splash ticker: fixed physics cadence, independent of token throughput.
-+  // Stops itself when every droplet has landed; a turn ending mid-splash
-+  // lets it finish over the coasting drift.
-+  useEffect(() => {
-+    if (!splashActive) {
++    if (!animationActive) {
 +      return
 +    }
 +
 +    const id = setInterval(() => {
-+      setSplashClock(current =>
-+        current >= maxPulseMs(peaksRef.current) ? -1 : current + WATER_FRAME_MS
-+      )
++      if (busyRef.current) {
++        setDriftFrame(current => current + frameStepRef.current)
++      }
++
++      const startedAt = splashStartedAtRef.current
++
++      if (startedAt !== null) {
++        const nextClock = splashClockAt(startedAt, Date.now())
++
++        if (nextClock < 0) {
++          splashStartedAtRef.current = null
++        }
++
++        setSplashClock(nextClock)
++      }
 +    }, WATER_FRAME_MS)
 +
 +    return () => clearInterval(id)
-+  }, [splashActive])
++  }, [animationActive])
 +
-+  return (
-+    <Text color={color}>
-+      {waterFrame(driftFrame, splashActive ? { peaks, clock: splashClock } : undefined)}
-+    </Text>
++  // The first no-splash render after a completed wake must discard hysteresis
++  // history so an idle frame cannot retain a lifted Braille row.
++  const justSettled = !splashActive && lastSplashClockRef.current >= 0
++
++  const surface = waterSurface(
++    driftFrame,
++    splashActive ? { clock: splashClock, origin, peaks } : undefined,
++    justSettled ? [] : previousSurfaceRef.current
 +  )
++
++  // Commit the hysteresis history after render. Mutating the ref during render
++  // would make React Strict Mode's repeated render observe a different input.
++  useEffect(() => {
++    previousSurfaceRef.current = surface
++    lastSplashClockRef.current = splashClock
++  }, [splashClock, surface])
++
++  return <Text color={WAVE_COLOR}>{waterFrameFromSurface(surface)}</Text>
 +}
  
  export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
    const [active, setActive] = useState(false)
-@@ -463,6 +659,59 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
+@@ -463,6 +818,59 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
    return <Text color={color}>♥</Text>
  }
  
@@ -4228,7 +4790,7 @@ index 1ff100f6d1..898a24d1b4 100644
  export function StatusRule({
    battery,
    focusView,
-@@ -472,6 +721,7 @@ export function StatusRule({
+@@ -472,6 +880,7 @@ export function StatusRule({
    status,
    statusColor,
    model,
@@ -4236,15 +4798,7 @@ index 1ff100f6d1..898a24d1b4 100644
    modelFast,
    modelReasoningEffort,
    indicatorStyle = 'kaomoji',
-@@ -481,6 +731,7 @@ export function StatusRule({
-   lastTurnEndedAt,
-   liveSessionCount,
-   sessionStartedAt,
-+
-   turnStartedAt,
-   voiceLabel,
-   onSessionCountClick,
-@@ -501,10 +752,76 @@ export function StatusRule({
+@@ -502,10 +911,167 @@ export function StatusRule({
        : ''
  
    const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
@@ -4259,7 +4813,6 @@ index 1ff100f6d1..898a24d1b4 100644
 +  const useFixedWaterStatus = true
 +
 +  if (useFixedWaterStatus) {
-+
 +    const compressionCount =
 +      cols >= 80 && typeof usage.compressions === 'number' && usage.compressions > 0
 +        ? usage.compressions
@@ -4270,6 +4823,38 @@ index 1ff100f6d1..898a24d1b4 100644
 +      : `${fmtK(usage.total)}/—`
 +
 +    const fixedContextSuffix = compressionCount ? ` · cmp ${compressionCount}` : ''
++
++    const fixedSubagentCount =
++      typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
++
++    const fixedResumeHint =
++      fixedSubagentCount === 1
++        ? '↩ resumes when subagent finishes'
++        : `↩ resumes when ${fixedSubagentCount} subagents finish`
++
++    const fixedSessionCountText =
++      liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
++
++    const showFixedBattery = !!battery && battery.available && battery.percent != null
++    const showFixedNotice = !busy && !!notice?.text
++    const showFixedStatus = cols < 72 && !busy && !showFixedNotice
++    const showFixedIdle = cols >= 76 && !busy && lastTurnEndedAt != null
++    const showFixedSessionCount = cols >= 76 && !!fixedSessionCountText
++    const showFixedSubagents = cols >= 92 && fixedSubagentCount > 0
++    const showFixedResumeHint = cols >= 96 && !busy && fixedSubagentCount > 0
++
++    const fixedDevCreditsText =
++      typeof usage.dev_credits_spent_micros === 'number'
++        ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
++        : ''
++
++    const handleFixedSessionCountClick = (event: {
++      stopImmediatePropagation?: () => void
++    }) => {
++      event.stopImmediatePropagation?.()
++      onSessionCountClick?.()
++    }
++
 +    // TPS is pinned at the right edge under ALL widths: only the model
 +    // segment yields (flexGrow/shrink), so the corner slot never collapses
 +    // when a long model label or a tight column count would have dropped it.
@@ -4277,12 +4862,33 @@ index 1ff100f6d1..898a24d1b4 100644
 +    return (
 +      <Box height={1}>
 +        <Box flexDirection="row" flexShrink={1} overflow="hidden" width={Math.max(1, cols)}>
++          {showFixedBattery ? (
++            <Text color={batteryColor(battery, t)}>
++              {batteryLabel(battery)}
++              <Text color={STATUS_METRIC_GRAY}>{' │ '}</Text>
++            </Text>
++          ) : null}
 +          <Box flexShrink={0} width={WATER_CELL_COUNT}>
-+            <WaterTicker
-+              busy={busy}
-+              color={busy ? statusColor : t.color.muted}
-+            />
++            <WaterTicker busy={busy} />
 +          </Box>
++          {showFixedStatus ? (
++            <Text color={statusColor} wrap="truncate-end">
++              {' │ '}
++              {status}
++            </Text>
++          ) : null}
++          {showFixedNotice ? (
++            <Box flexDirection="row" flexShrink={1} overflow="hidden">
++              <Text color={noticeColor(notice!.level, t)} wrap="truncate-end">
++                {notice!.text}
++              </Text>
++            </Box>
++          ) : null}
++          {DEV_CREDITS_MODE ? (
++            <Text color={t.color.warn} wrap="truncate-end">
++              {' (dev credits)'}
++            </Text>
++          ) : null}
 +          <Text color={STATUS_METRIC_GRAY}>{' │ '}</Text>
 +          <Box flexGrow={1} flexShrink={1} overflow="hidden">
 +            <Text color={STATUS_METRIC_GRAY} wrap="truncate-end">
@@ -4296,6 +4902,38 @@ index 1ff100f6d1..898a24d1b4 100644
 +                <Text color={STATUS_METRIC_GRAY} wrap="truncate-end">{`${bgCount} bg`}</Text>
 +              </Box>
 +            </>
++          ) : null}
++          {showFixedSubagents ? (
++            <Text color={STATUS_METRIC_GRAY} wrap="truncate-end">
++              {' │ '}⛓ {fixedSubagentCount}
++            </Text>
++          ) : null}
++          {showFixedResumeHint ? (
++            <Text color={STATUS_METRIC_GRAY} dim wrap="truncate-end">
++              {' │ '}
++              {fixedResumeHint}
++            </Text>
++          ) : null}
++          {showFixedIdle ? (
++            <Text color={STATUS_METRIC_GRAY} wrap="truncate-end">
++              {' │ '}
++              <IdleSince endedAt={lastTurnEndedAt} />
++            </Text>
++          ) : null}
++          {showFixedSessionCount ? (
++            onSessionCountClick ? (
++              <Box flexShrink={0} onClick={handleFixedSessionCountClick}>
++                <Text color={t.color.accent}> │ {fixedSessionCountText}</Text>
++              </Box>
++            ) : (
++              <Text color={STATUS_METRIC_GRAY}> │ {fixedSessionCountText}</Text>
++            )
++          ) : null}
++          {fixedDevCreditsText ? (
++            <Text color={t.color.accent} wrap="truncate-end">
++              {' │ '}
++              {fixedDevCreditsText}
++            </Text>
 +          ) : null}
 +          <Text color={STATUS_METRIC_GRAY}>{' │ '}</Text>
 +          <Box flexShrink={1} overflow="hidden">
@@ -4312,6 +4950,13 @@ index 1ff100f6d1..898a24d1b4 100644
 +          <Box flexShrink={0}>
 +            <TpsMeter show />
 +          </Box>
++          {sessionTitle ? (
++            <Box flexShrink={0}>
++              <Text backgroundColor={t.color.accent} bold color={t.color.statusFg} wrap="truncate-end">
++                {` ${sessionTitle} `}
++              </Text>
++            </Box>
++          ) : null}
 +        </Box>
 +      </Box>
 +    )
@@ -4323,7 +4968,7 @@ index 1ff100f6d1..898a24d1b4 100644
    const batteryText = showBattery ? batteryLabel(battery!) : ''
    const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
    const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
-@@ -561,7 +878,7 @@ export function StatusRule({
+@@ -563,7 +1129,7 @@ export function StatusRule({
    }
  
    const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
@@ -4332,7 +4977,7 @@ index 1ff100f6d1..898a24d1b4 100644
  
    // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
    // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
-@@ -569,11 +886,12 @@ export function StatusRule({
+@@ -571,11 +1137,12 @@ export function StatusRule({
    // raises remaining nets a negative Δ (honest).
    const devCreditsText =
      typeof usage.dev_credits_spent_micros === 'number'
@@ -4346,7 +4991,7 @@ index 1ff100f6d1..898a24d1b4 100644
  
    // Idle clock — time since the last final agent response. Hidden while busy
    // (the FaceTicker's elapsed tail covers the live turn) and before the first
-@@ -582,10 +900,10 @@ export function StatusRule({
+@@ -584,10 +1151,10 @@ export function StatusRule({
      segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
  
    const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
@@ -4359,7 +5004,7 @@ index 1ff100f6d1..898a24d1b4 100644
    const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
  
    // Parked-background reassurance: a top-level delegate_task runs in the
-@@ -670,6 +988,7 @@ export function StatusRule({
+@@ -672,6 +1239,7 @@ export function StatusRule({
                {ctxLabel}
              </Text>
            ) : null}
@@ -4367,7 +5012,7 @@ index 1ff100f6d1..898a24d1b4 100644
          </Box>
          {showFocus ? (
            <Box flexDirection="row" flexShrink={0}>
-@@ -863,11 +1182,13 @@ interface StatusRuleProps {
+@@ -870,6 +1438,7 @@ interface StatusRuleProps {
    cols: number
    cwdLabel: string
    model: string
@@ -4375,14 +5020,8 @@ index 1ff100f6d1..898a24d1b4 100644
    modelFast?: boolean
    modelReasoningEffort?: string
    indicatorStyle?: IndicatorStyle
-   notice?: Notice | null
-   sessionStartedAt?: null | number
-+
-   status: string
-   statusColor: string
-   t: Theme
 diff --git a/ui-tui/src/components/appLayout.tsx b/ui-tui/src/components/appLayout.tsx
-index 660fcb881d..01de7fd057 100644
+index ad4726798f..35956db167 100644
 --- a/ui-tui/src/components/appLayout.tsx
 +++ b/ui-tui/src/components/appLayout.tsx
 @@ -14,6 +14,7 @@ import { usePet } from '../app/usePet.js'
@@ -4426,16 +5065,225 @@ index 660fcb881d..01de7fd057 100644
                ) : row.msg.kind === 'panel' && row.msg.panelData ? (
                  <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
                ) : (
-@@ -501,7 +504,9 @@ const StatusRulePane = memo(function StatusRulePane({
+@@ -501,6 +504,7 @@ const StatusRulePane = memo(function StatusRulePane({
          modelReasoningEffort={ui.info?.reasoning_effort}
          notice={ui.notice}
          onSessionCountClick={() => patchOverlayState({ sessions: true })}
 +        provider={ui.info?.provider ?? ''}
          sessionStartedAt={status.sessionStartedAt}
-+
+         sessionTitle={status.sessionTitle}
          status={ui.status}
-         statusColor={status.statusColor}
-         t={ui.theme}
+diff --git a/ui-tui/src/components/branding.tsx b/ui-tui/src/components/branding.tsx
+index 18fdf3332c..d4a59b8249 100644
+--- a/ui-tui/src/components/branding.tsx
++++ b/ui-tui/src/components/branding.tsx
+@@ -9,7 +9,6 @@ import type { Theme } from '../theme.js'
+ import type { PanelSection, SessionInfo } from '../types.js'
+ 
+ import { Accordion } from './accordion.js'
+-import { ShimmerRows } from './loaders.js'
+ import { WidgetGrid } from './widgetGrid.js'
+ 
+ const LOADER_TICK_MS = 120
+@@ -108,6 +107,14 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
+     return null
+   }
+ 
++  // Whitespace-only custom logo = skin's "suppress" convention (a single
++  // space hides the art; "" falls back to the built-in). Hide the banner
++  // entirely — no art row and no tagline — so minimal skins like pi show
++  // only the session panel.
++  if (t.bannerLogo && t.bannerLogo.trim() === '') {
++    return null
++  }
++
+   const logoLines = logo(t.color, t.bannerLogo || undefined)
+   const logoW = t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH
+ 
+@@ -190,28 +197,16 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
+   )
+ }
+ 
+-// ── Skeleton ─────────────────────────────────────────────────────────
+-//
+-// Lazy sections render shimmer rows shaped like the real content (label
+-// block + value run) instead of a blank gap that pops when data lands.
+-// Row widths mirror the typical toolsets listing.
+-const SKELETON_ROWS: readonly (readonly [number, number])[] = [
+-  [7, 30],
+-  [7, 9],
+-  [14, 12],
+-  [12, 12],
+-  [7, 7],
+-  [10, 13]
+-]
+-
+ // ── SessionPanel ─────────────────────────────────────────────────────
+ 
+ const SKILLS_MAX = 8
+-const TOOLSETS_MAX = 8
+ 
+ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
+   const term = useStdout().stdout?.columns ?? 100
+   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
++  // Two-column layout (pi skin): caduceus art track on the left, ALL text
++  // (header, model/cwd/session, sections, footer) on the right. Narrow
++  // terminals drop the art track and keep just the text column.
+   const heroLines = caduceus(t.color, t.bannerHero || undefined)
+   const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
+   const wide = cols >= 90 && leftW + 40 < cols
+@@ -226,7 +221,6 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
+   const listFade = mix(t.color.muted, t.color.text, 0.5)
+ 
+   // ── Local collapse state for each section ──
+-  const [toolsOpen, setToolsOpen] = useState(true)
+   const [skillsOpen, setSkillsOpen] = useState(false)
+   const [systemOpen, setSystemOpen] = useState(false)
+   const [mcpOpen, setMcpOpen] = useState(false)
+@@ -276,6 +270,8 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
+   }
+ 
+   // ── Collapsible tools section ──
++  // (pi skin: the tools list is removed from the panel; only the count in the
++  // footer below survives, so `toolEntries`/`toolsTotal` are still needed.)
+   const toolEntries = Object.entries(info.tools).sort()
+   const toolsTotal = flat(info.tools).length
+ 
+@@ -285,27 +281,6 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
+   const mcpServers = info.mcp_servers ?? []
+   const mcpConnected = mcpServers.filter(s => s.connected).length
+ 
+-  const toolsBody = () => {
+-    if (info.lazy && toolEntries.length === 0) {
+-      return <ShimmerRows color={listFade} highlight={t.color.label} rows={SKELETON_ROWS} />
+-    }
+-
+-    const shown = toolEntries.slice(0, TOOLSETS_MAX)
+-    const overflow = toolEntries.length - TOOLSETS_MAX
+-
+-    return (
+-      <>
+-        {shown.map(([k, vs]) => (
+-          <Text key={k} wrap="truncate">
+-            <Text color={t.color.label}>{strip(k)}: </Text>
+-            <Text color={listFade}>{truncLine(strip(k) + ': ', vs)}</Text>
+-          </Text>
+-        ))}
+-        {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>}
+-      </>
+-    )
+-  }
+-
+   // ── Collapsible MCP section ──
+   const mcpBody = () => (
+     <>
+@@ -343,73 +318,38 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
+     return <Text color={t.color.muted}>{info.system_prompt}</Text>
+   }
+ 
+-  // The wide layout is a real two-column grid: a fixed-width hero track and a
+-  // flexible info track (grid-template-columns: <leftW> 1fr, gap 2) — the
+-  // terminal equivalent of the desktop pane shell's fixed-vs-flex tracks.
+-  // Narrow drops to a single flexible track. Track math reproduces the old
+-  // hand-rolled widths exactly: usable = (leftW + 2 + w) - gap = leftW + w.
++  // Left track: the caduceus art only. Right track: every text row.
+   const heroColumn = wide ? (
+     <Box flexDirection="column" width="100%">
+       <ArtLines lines={heroLines} />
+-      <Text />
+-
+-      <Text color={t.color.accent}>
+-        {info.model.split('/').pop()}
+-        <Text color={t.color.muted}> · Nous Research</Text>
+-      </Text>
+-
+-      <Text color={t.color.muted} wrap="truncate-end">
+-        {info.cwd || process.cwd()}
+-      </Text>
+-
+-      {sid && (
+-        <Text>
+-          <Text color={t.color.sessionLabel}>Session: </Text>
+-          <Text color={t.color.sessionBorder}>{sid}</Text>
+-        </Text>
+-      )}
+     </Box>
+   ) : null
+ 
+   const infoColumn = (
+     <Box flexDirection="column" width="100%">
+-      {wide ? (
+-        <Box justifyContent="center" marginBottom={1}>
+-          <Text bold color={t.color.primary}>
+-            {t.brand.name}
+-            {info.version ? ` v${info.version}` : ''}
+-            {info.release_date ? ` (${info.release_date})` : ''}
+-          </Text>
+-        </Box>
+-      ) : (
+-        // Narrow layout hides the hero column; surface model/cwd/session
+-        // here so they aren't lost.
+-        <Box flexDirection="column" marginBottom={1}>
+-          <Text color={t.color.accent} wrap="truncate-end">
+-            {info.model.split('/').pop()}
+-            <Text color={t.color.muted}> · Nous Research</Text>
+-          </Text>
+-          <Text color={t.color.muted} wrap="truncate-end">
+-            {info.cwd || process.cwd()}
++      <Box flexDirection="column" marginBottom={1}>
++        <Text color={t.color.primary} wrap="truncate-end">
++          {t.brand.name}
++          {info.version ? ` v${info.version}` : ''}
++          {info.release_date ? ` (${info.release_date})` : ''}
++        </Text>
++        <Text color={t.color.accent} wrap="truncate-end">
++          {info.model.split('/').pop()}
++          <Text color={t.color.muted}> · Nous Research</Text>
++        </Text>
++        <Text color={t.color.muted} wrap="truncate-end">
++          {info.cwd || process.cwd()}
++        </Text>
++        {sid && (
++          <Text wrap="truncate-end">
++            <Text color={t.color.sessionLabel}>Session: </Text>
++            <Text color={t.color.sessionBorder}>{sid}</Text>
+           </Text>
+-          {sid && (
+-            <Text wrap="truncate-end">
+-              <Text color={t.color.sessionLabel}>Session: </Text>
+-              <Text color={t.color.sessionBorder}>{sid}</Text>
+-            </Text>
+-          )}
+-        </Box>
+-      )}
+-
+-      {/* ── Tools (expanded by default) ── */}
+-      <Box flexDirection="column" marginTop={1}>
+-        <Accordion onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title="Available Tools">
+-          {toolsBody()}
+-        </Accordion>
++        )}
+       </Box>
+ 
+       {/* ── Skills (collapsed by default) ── */}
+-      <Box flexDirection="column" marginTop={1}>
++      <Box flexDirection="column">
+         <Accordion
+           count={skillsTotal}
+           onToggle={() => setSkillsOpen(v => !v)}
+@@ -459,6 +399,12 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
+         {/* Lazy boot: never print "0 tools · 0 skills" while counts load. */}
+         {info.lazy && !toolsTotal ? '… ' : `${toolsTotal} `}tools{' · '}
+         {info.lazy && !skillsTotal ? '… ' : `${skillsTotal} `}skills
++        {typeof info.stale_skills === 'number' && info.stale_skills > 0 ? (
++          <>
++            {' · '}
++            <Text color={t.color.warn}>{info.stale_skills} stale</Text>
++          </>
++        ) : null}
+         {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
+         {' · '}
+         <Text color={t.color.muted}>/help for commands</Text>
 diff --git a/ui-tui/src/domain/messages.ts b/ui-tui/src/domain/messages.ts
 index b4428520d8..8bcc1c5c6b 100644
 --- a/ui-tui/src/domain/messages.ts
@@ -4496,11 +5344,14 @@ index c5bb9ff0d3..0eec3c8d1b 100644
        session_id?: string
 diff --git a/ui-tui/src/lib/sessionExit.ts b/ui-tui/src/lib/sessionExit.ts
 new file mode 100644
-index 0000000000..29a370f1f9
+index 0000000000..044f98713f
 --- /dev/null
 +++ b/ui-tui/src/lib/sessionExit.ts
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,53 @@
 +import { writeSync } from 'node:fs'
++
++/** Return only a durable stored session id; never substitute the gateway UI key. */
++export const durableExitSessionId = (sid: null | string | undefined): null | string => sid || null
 +
 +/**
 + * Print the session id on user-initiated exits (Ctrl+C / Ctrl+D when idle,
@@ -4693,11 +5544,15 @@ index 0000000000..32875dd34c
 +  return `${value.toFixed(1).padStart(5)} t/s`
 +}
 diff --git a/ui-tui/src/types.ts b/ui-tui/src/types.ts
-index 49c4cef418..ce556c37bd 100644
+index 49c4cef418..2d6bf7bef6 100644
 --- a/ui-tui/src/types.ts
 +++ b/ui-tui/src/types.ts
-@@ -176,6 +176,15 @@ export interface SessionInfo {
+@@ -174,8 +174,19 @@ export interface SessionInfo {
+   release_date?: string
+   service_tier?: string
    skills: Record<string, string[]>
++  /** Number of curator-marked stale skills (state == stale in .usage.json). */
++  stale_skills?: number
    system_prompt?: string
    tools: Record<string, string[]>
 +  /** Whether the initial TUI banner and session summary should render. */
@@ -4712,11 +5567,385 @@ index 49c4cef418..ce556c37bd 100644
    update_behind?: number | null
    update_command?: string
    usage?: Usage
+diff --git a/user-config/README.md b/user-config/README.md
+new file mode 100644
+index 0000000000..d809a29942
+--- /dev/null
++++ b/user-config/README.md
+@@ -0,0 +1,64 @@
++# Blitzzz Hermes configuration snapshot
++
++Versioned, non-secret snapshot of the active personal Hermes setup.
++
++## Contents
++
++- `display.yaml` — active display, status-bar, and spacing-related settings.
++- `runtime.yaml` — non-secret model, terminal, agent, memory, delegation, compression, and tool settings.
++- `skins/pi.yaml` — grayscale Pi skin, including transparent status bar and static spinner.
++- `tui-theme-boot.json` — resolved TUI boot theme derived from the active skin.
++- `profile/USER.md` and `profile/SOUL.md` — personal instruction/profile files.
++
++The accompanying `ui-tui/src/components/appChrome.tsx` change is the active fixed-width footer: a 25-cell Braille water raster plus model, effort, and context. Its focused test is `ui-tui/src/__tests__/appChromeStatusRule.test.tsx`.
++
++## Source of truth: change here first
++
++`user-config/` is a tracked recovery snapshot; Hermes does not load it at
++runtime. Make the intended change in the live source, verify it, then mirror
++the changed non-secret files here in the same commit.
++
++| Change | Live source to edit | Tracked mirror |
++| --- | --- | --- |
++| Display/status-bar settings | `~/.hermes/config.yaml` via `hermes config set display.<key> <value>` | `display.yaml` |
++| Non-secret runtime settings | `~/.hermes/config.yaml` via `hermes config set <key> <value>` | `runtime.yaml` |
++| Colors, spinner, tool glyphs | `~/.hermes/skins/pi.yaml` | `skins/pi.yaml` |
++| Fixed water footer and spacing | `~/.hermes/hermes-agent/ui-tui/src/components/appChrome.tsx` | `ui-tui/src/components/appChrome.tsx` plus its focused test |
++| Personal instructions | `~/.hermes/memories/USER.md` and `~/.hermes/SOUL.md` | `profile/USER.md` and `profile/SOUL.md` |
++| Generated TUI theme | do not edit directly; it is regenerated from the active skin | `tui-theme-boot.json` |
++
++Restart Hermes after a config or source change. For an intentional restore,
++merge YAML into `~/.hermes/config.yaml` rather than replacing it wholesale,
++then copy the skin/profile files to their live paths.
++
++## Normal update and git workflow
++
++1. Start cleanly: run `git status --short`. If there is unrelated work, keep it
++   out of this change (separate branch/worktree, commit, or stash it first).
++2. Edit the live source in the table above and verify the running result.
++3. Mirror only the changed, non-secret file(s) into `user-config/`; update the
++   corresponding `ui-tui` source and test when the footer behavior changes.
++4. Validate before staging:
++
++   ```bash
++   cd /Users/__blitzzz/Documents/GitHub/blitzzz-hermes
++   git diff --check
++   cd ui-tui && npm run build:ink && npm test -- appChromeStatusRule.test.tsx && npm run typecheck
++   ```
++
++5. Review and stage narrowly—never use `git add -A` for this snapshot:
++
++   ```bash
++   cd /Users/__blitzzz/Documents/GitHub/blitzzz-hermes
++   git diff -- user-config ui-tui/src/components/appChrome.tsx ui-tui/src/__tests__/appChromeStatusRule.test.tsx
++   git add -- user-config ui-tui/src/components/appChrome.tsx ui-tui/src/__tests__/appChromeStatusRule.test.tsx
++   git diff --cached --check
++   git commit -m "chore(config): update personal Hermes profile"
++   git push origin HEAD
++   ```
++
++Never stage `.env`, `auth.json`, gateway state, session transcripts, or caches.
++
++## Deliberate exclusions
++
++No `.env`, `auth.json`, provider API keys, gateway tokens, session transcripts, or runtime caches are stored here. `runtime.yaml` contains only non-secret settings.
+diff --git a/user-config/display.yaml b/user-config/display.yaml
+new file mode 100644
+index 0000000000..18a6e6534a
+--- /dev/null
++++ b/user-config/display.yaml
+@@ -0,0 +1,52 @@
++# Merge into ~/.hermes/config.yaml under `display:`.
++display:
++  compact: false
++  personality: kawaii
++  resume_display: full
++  resume_exchanges: 10
++  resume_max_user_chars: 300
++  resume_max_assistant_chars: 200
++  resume_max_assistant_lines: 3
++  resume_skip_tool_only: true
++  busy_input_mode: interrupt
++  interface: tui
++  tui_auto_resume_recent: false
++  tui_agents_nudge: true
++  bell_on_complete: false
++  show_reasoning: false
++  streaming: true
++  timestamps: false
++  final_response_markdown: strip
++  persistent_output: true
++  persistent_output_max_lines: 200
++  inline_diffs: true
++  file_mutation_verifier: true
++  turn_completion_explainer: true
++  show_cost: false
++  skin: pi
++  language: en
++  tui_status_indicator: unicode
++  cli_refresh_interval: 0
++  user_message_preview:
++    first_lines: 2
++    last_lines: 2
++  interim_assistant_messages: true
++  tool_progress_command: false
++  tool_preview_length: 100
++  spinner_token_flow: false
++  ephemeral_system_ttl: 0
++  platforms:
++    telegram:
++      streaming: true
++    discord:
++      streaming: false
++  runtime_footer:
++    enabled: false
++    fields:
++      - model
++      - context_pct
++      - cwd
++  copy_shortcut: auto
++  tool_progress: new
++  background_process_notifications: all
++  tui_statusbar: bottom
+diff --git a/user-config/profile/SOUL.md b/user-config/profile/SOUL.md
+new file mode 100644
+index 0000000000..5881f94a13
+--- /dev/null
++++ b/user-config/profile/SOUL.md
+@@ -0,0 +1 @@
++You are Hermes Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose unless otherwise directed below. Be targeted and efficient in your exploration and investigations.
+\ No newline at end of file
+diff --git a/user-config/profile/USER.md b/user-config/profile/USER.md
+new file mode 100644
+index 0000000000..42716927bb
+--- /dev/null
++++ b/user-config/profile/USER.md
+@@ -0,0 +1,7 @@
++User insists I **always read CLAUDE.md first** before making repo changes. Follows Makefile targets and repo conventions strictly. Prefers Terraform over gcloud for infra changes.
++§
++User wants concise responses; prefers REST API over gcloud CLI for Composer ops.
++§
++User's Composer env: `seeda-composer` in `australia-southeast1`, project `seeda-prod`, Airflow 3.1.7. Key DAGs: `custom_transfer__kleva_brands`, `custom_transfer__global_rescue`.
++§
++Output preference: concise, direct, declarative; no preambles, recaps, or pleasantries; immediate tool actions. Vietnamese for Vietnamese messages. Infrastructure is conservative: review Terraform before application and use request-based CPU for batch Cloud Run. Airflow monitoring is ~45-minute cadence with failed tasks cleared. Shared-skill source: ~/Documents/GitHub/agentic/skills; refresh links with setup-symlinks.sh. UI: grayscale, borderless, emoji-free, low-jitter. Reasoning: verify end state; frame, ground, reason, attack, deliver; use evidence and caveats. Regression/deferral work continues with delegation. Subagents: Terra medium natively; Luna via Codex CLI high/xhigh for difficult advisory work. Preferred sleep: 180 seconds. Persona: subtle quiet female kuudere kouhai—helpful action and direct competence.
+\ No newline at end of file
+diff --git a/user-config/runtime.yaml b/user-config/runtime.yaml
+new file mode 100644
+index 0000000000..60aa8c53b2
+--- /dev/null
++++ b/user-config/runtime.yaml
+@@ -0,0 +1,92 @@
++# Non-secret settings from ~/.hermes/config.yaml. Merge intentionally.
++model:
++  default: gpt-5.6-terra
++  provider: openai-codex
++  max_tokens: 64000
++  context_length: 260000
++
++agent:
++  max_turns: 90
++  gateway_timeout: 1800
++  restart_drain_timeout: 60
++  api_max_retries: 3
++  service_tier: ''
++  tool_use_enforcement: auto
++  task_completion_guidance: true
++  environment_probe: true
++  environment_hint: ''
++  verify_on_stop: false
++  gateway_timeout_warning: 900
++  clarify_timeout: 600
++  gateway_notify_interval: 600
++  gateway_auto_continue_freshness: 3600
++  image_input_mode: auto
++  disabled_toolsets: []
++  verbose: false
++  reasoning_effort: high
++
++memory:
++  memory_enabled: true
++  user_profile_enabled: true
++  memory_char_limit: 2200
++  user_char_limit: 1375
++  provider: ''
++  nudge_interval: 10
++  flush_min_turns: 6
++
++terminal:
++  backend: local
++  modal_mode: auto
++  cwd: .
++  timeout: 180
++  env_passthrough: []
++  shell_init_files: []
++  auto_source_bashrc: true
++  docker_image: nikolaik/python-nodejs:python3.11-nodejs20
++  docker_forward_env: []
++  singularity_image: docker://nikolaik/python-nodejs:python3.11-nodejs20
++  modal_image: nikolaik/python-nodejs:python3.11-nodejs20
++  daytona_image: nikolaik/python-nodejs:python3.11-nodejs20
++  container_cpu: 1
++  container_memory: 5120
++  container_disk: 51200
++  container_persistent: true
++  docker_volumes: []
++  docker_mount_cwd_to_workspace: false
++  docker_extra_args: []
++  docker_run_as_host_user: false
++  persistent_shell: true
++  lifetime_seconds: 300
++
++compression:
++  enabled: true
++  threshold: 0.9
++  target_ratio: 0.2
++  protect_last_n: 20
++  hygiene_hard_message_limit: 400
++  protect_first_n: 3
++  abort_on_summary_failure: false
++
++delegation:
++  inherit_mcp_toolsets: true
++  max_iterations: 50
++  child_timeout_seconds: 600
++  reasoning_effort: ''
++  max_concurrent_children: 3
++  max_spawn_depth: 1
++  orchestrator_enabled: true
++  subagent_auto_approve: false
++  default_toolsets:
++    - terminal
++    - file
++    - web
++
++toolsets:
++  - hermes-cli
++
++tools:
++  tool_search:
++    enabled: auto
++    threshold_pct: 10
++    search_default_limit: 5
++    max_search_limit: 20
+diff --git a/user-config/skins/pi.yaml b/user-config/skins/pi.yaml
+new file mode 100644
+index 0000000000..055a76b9c8
+--- /dev/null
++++ b/user-config/skins/pi.yaml
+@@ -0,0 +1,112 @@
++name: pi
++description: "Clean minimal — grayscale, no flashy colors, no emoji, no visible borders, static spinner"
++colors:
++  banner_border: "#141417"
++  banner_title: "#e4e4e7"
++  banner_accent: "#a1a1aa"
++  banner_dim: "#4a4a52"
++  banner_text: "#c8c8d0"
++  ui_accent: "#a1a1aa"
++  ui_label: "#8a8a92"
++  ui_ok: "#9a9aa2"
++  ui_error: "#d0d0d8"
++  ui_warn: "#b0b0b8"
++  prompt: "#e4e4e7"
++  input_rule: "#26262b"
++  response_border: "#141417"
++  status_bar_bg: ""
++  status_bar_text: "#d4d4d8"
++  status_bar_strong: "#e4e4e7"
++  status_bar_dim: "#71717a"
++  status_bar_good: "#b0b0b8"
++  status_bar_warn: "#9a9aa2"
++  status_bar_bad: "#d0d0d8"
++  status_bar_critical: "#e0e0e8"
++  session_label: "#8a8a92"
++  session_border: "#26262b"
++  completion_menu_bg: "#1e1e22"
++  completion_menu_current_bg: "#2a2a30"
++  completion_menu_meta_bg: "#1e1e22"
++  completion_menu_meta_current_bg: "#2a2a30"
++spinner:
++  # All faces identical -> static spinner, zero animation jitter.
++  waiting_faces: ["(·)", "(·)", "(·)"]
++  # Blank face + formatter support renders the compact "working..." label.
++  thinking_faces: ["", "", ""]
++  # Single fixed verb -> spinner line never changes width, zero repaint jitter.
++  thinking_verbs: ["working", "working", "working"]
++  wings: [["·", "·"], ["·", "·"]]
++branding:
++  agent_name: "Hermes"
++  welcome: "Type a message or /help for commands."
++  goodbye: "Goodbye."
++  response_label: " hermes "
++  prompt_symbol: "❯"
++  help_header: "Available Commands"
++tool_prefix: "·"
++# Empty-out every tool emoji (single space is truthy, so it wins over the
++# registry defaults; an empty string would fall through to the registry).
++tool_emojis:
++  browser_back: " "
++  browser_click: " "
++  browser_console: " "
++  browser_get_images: " "
++  browser_navigate: " "
++  browser_press: " "
++  browser_scroll: " "
++  browser_snapshot: " "
++  browser_type: " "
++  browser_vision: " "
++  clarify: " "
++  close_terminal: " "
++  computer_use: " "
++  cronjob: " "
++  delegate_task: " "
++  discord: " "
++  execute_code: " "
++  feishu_doc_read: " "
++  ha_call_service: " "
++  ha_get_state: " "
++  ha_list_entities: " "
++  ha_list_services: " "
++  image_generate: " "
++  kanban_block: " "
++  kanban_comment: " "
++  kanban_complete: " "
++  kanban_create: " "
++  kanban_heartbeat: " "
++  kanban_link: " "
++  kanban_list: " "
++  kanban_show: " "
++  kanban_unblock: " "
++  memory: " "
++  patch: " "
++  process: " "
++  read_file: " "
++  read_terminal: " "
++  search_files: " "
++  session_search: " "
++  skill_manage: " "
++  skill_view: " "
++  skills_list: " "
++  terminal: " "
++  text_to_speech: " "
++  todo: " "
++  video_analyze: " "
++  video_generate: " "
++  vision_analyze: " "
++  web_extract: " "
++  web_search: " "
++  write_file: " "
++  x_search: " "
++  xai_video_edit: " "
++  xai_video_extend: " "
++  yb_query_group_info: " "
++  yb_query_group_members: " "
++  yb_search_sticker: " "
++  yb_send_dm: " "
++  yb_send_sticker: " "
++# Single space replaces the big gold ASCII logo/hero (empty string would
++# fall back to the built-in ASCII art).
++banner_logo: " "
++banner_hero: " "
+diff --git a/user-config/tui-theme-boot.json b/user-config/tui-theme-boot.json
+new file mode 100644
+index 0000000000..0c7d040fe8
+--- /dev/null
++++ b/user-config/tui-theme-boot.json
+@@ -0,0 +1 @@
++{"background":"#282c34","theme":{"color":{"primary":"#e4e4e7","accent":"#a1a1aa","border":"#555557","text":"#c8c8d0","muted":"#4a4a52","completionBg":"#1e1e22","completionCurrentBg":"#2a2a30","completionMetaBg":"#1e1e22","completionMetaCurrentBg":"#2a2a30","label":"#8a8a92","ok":"#9a9aa2","error":"#d0d0d8","warn":"#b0b0b8","tool":"#a1a1aa","thinking":"#4a4a52","syntaxString":"#a1a1aa","syntaxNumber":"#c8c8d0","syntaxKeyword":"#141417","syntaxComment":"#4a4a52","prompt":"#e4e4e7","sessionLabel":"#8a8a92","sessionBorder":"#505054","statusBg":"","statusFg":"#d4d4d8","statusGood":"#b0b0b8","statusWarn":"#9a9aa2","statusBad":"#d0d0d8","statusCritical":"#e0e0e8","selectionBg":"#3a3a55","diffAdded":"rgb(220,255,220)","diffRemoved":"rgb(255,220,220)","diffAddedWord":"rgb(36,138,61)","diffRemovedWord":"rgb(207,34,46)","shellDollar":"#4dabf7"},"brand":{"name":"Hermes","icon":"⚕","prompt":"❯","welcome":"Type a message or /help for commands.","goodbye":"Goodbye.","tool":"·","helpHeader":"Available Commands"},"bannerLogo":" ","bannerHero":" "},"version":1}
+\ No newline at end of file
 diff --git a/website/docs/user-guide/configuration.md b/website/docs/user-guide/configuration.md
-index cfe85dbd55..ad6ad4a925 100644
+index 4a97edca68..af63ec5db1 100644
 --- a/website/docs/user-guide/configuration.md
 +++ b/website/docs/user-guide/configuration.md
-@@ -1642,6 +1642,7 @@ display:
+@@ -1688,6 +1688,7 @@ display:
    skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
    personality: ""         # Legacy cosmetic field still surfaced in some summaries
    compact: false          # Compact output mode (less whitespace)
@@ -4724,7 +5953,7 @@ index cfe85dbd55..ad6ad4a925 100644
    resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
    bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
    show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
-@@ -1660,6 +1661,17 @@ display:
+@@ -1706,6 +1707,17 @@ display:
    language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
  ```
  

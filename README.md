@@ -9,11 +9,15 @@ with the patch-set applied on top after each `hermes update`.
 
 | Path | Purpose |
 |---|---|
-| `scripts/apply-fork-to-managed.sh` | Apply the active non-spec snapshot onto the managed runtime (`--check` dry-run). It never replays the historical full fork. Run after every `hermes update`. |
+| `scripts/apply-fork-to-managed.sh` | Apply the active non-spec snapshot onto the managed runtime (`--check` validates a temporary patched clone). It never replays the historical full fork. Run after every `hermes update`. |
+| `scripts/check-patch-surface.py` | Fail-closed contract check for the durable session ID, exit wiring, source regression test, gateway field, and compiled TUI bundle. |
+| `scripts/verify-exit-session-contract.sh` | Execute the `/quit`, idle Ctrl+C, and session-ID regressions, rebuild the candidate TUI, then verify its compiled bundle. |
+| `tests/test-session-exit-patch-contract.sh` | Mutation regression suite proving broken exit-session patch legs are rejected. |
 | `scripts/reapply-ui-patches.sh` | Inventory the active non-spec snapshot; historical cherry-picks are disabled. |
 | `scripts/upstream-sync.sh` | Old rebase pipeline for when this repo was a full fork (kept for reference). |
 | `patches/fork-local-v202683.patch` | Archived full-fork export as of v2026.8.3. It is retained for historical recovery only and is never applied by the active workflow. |
-| `patches/managed-current-no-spec-20260806.patch` | Active consolidated snapshot of the managed tree after speculative removal; no speculative backend/config/UI wiring is present. |
+| `patches/managed-current-no-spec-20260809.patch` | Active consolidated snapshot of the managed tree after speculative removal; no speculative backend/config/UI wiring is present. |
+| `patches/runtime-budget-20260809.patch` | Global interactive execution-budget prompt plus terminal/process runtime advice and synchronous timeout enforcement. |
 
 ## Workflow
 
@@ -23,7 +27,14 @@ bash ~/Documents/GitHub/blitzzz-hermes/scripts/apply-fork-to-managed.sh
 ```
 
 The apply script refuses a dirty managed checkout, then applies the consolidated
-snapshot only when its context still matches upstream. It never replays
+snapshot and focused additive patches only when their context still matches upstream. An incompatible delta is
+fatal, so the script cannot skip the patch and report a misleading successful
+build. It validates the complete exit-session contract before build, executes
+the `/quit`, idle Ctrl+C, and session-ID Vitest regressions, rebuilds, and
+verifies the compiled bundle before reporting success. `--check` performs the
+same executable verification in a dependency-ordered temporary clone. The daily
+maintenance watchdog uses that executable verifier instead of marker-only
+detection. It never replays
 speculative-compression code, so upstream compression, persistent memory, and
 `micro_compact` remain fully upstream-owned. After applying it re-syncs the
 managed venv and rebuilds the managed TUI dist.
