@@ -34,10 +34,17 @@ if [[ ! -d "$MANAGED/.git" ]]; then
 fi
 
 # ---- managed guard -------------------------------------------------------------
+# Idempotent re-run: a tree whose dirty content is EXACTLY the active snapshot
+# (reverse-applies cleanly) is already carrying the surface — not a half-update.
 cd "$MANAGED"
 MANAGED_HEAD="$(git rev-parse --short HEAD)"
+ACTIVE_SNAPSHOT="$(ls "$FORK"/patches/managed-current-*.patch 2>/dev/null | head -1)"
 if [[ -n "$(git status --porcelain)" ]]; then
-  echo "managed tree is dirty — stash or discard first (hermes update usually resets it):" >&2
+  if [[ -n "$ACTIVE_SNAPSHOT" ]] && git apply --reverse --check --whitespace=nowarn "$ACTIVE_SNAPSHOT" 2>/dev/null; then
+    echo "managed HEAD $MANAGED_HEAD already carries the active snapshot — nothing to apply"
+    exit 0
+  fi
+  echo "managed tree is dirty and NOT the active snapshot — stash or discard first:" >&2
   git status --porcelain | head -5 >&2
   exit 1
 fi
