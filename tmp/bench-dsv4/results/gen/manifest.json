@@ -1,0 +1,16 @@
+{
+ "exercise.md": "fbd49f3c3864f6cc717613fbf04f606c68c459c6bd5973c0ba96acb4d1a5a8c0",
+ "grader/grader.py": "208608ba19d8ee81448ca273a1eb18ee704d0ce830788a8b84132cd6dc79b167",
+ "grader/hidden/rand220.cnf": "82413407b1e6e07d65d7ff6aa05102dc7fb9e6c6d3adb5cdbd6a4ed188a0e346",
+ "grader/hidden/coloring14.json": "9235ad27a9053f6bab03cde471ec17eea60c8ba17a7a7bb314a401f68f53cff5",
+ "grader/hidden/coloring14.cnf": "2b47e40160d893f45d885a934bb57beb24143effdc390e70531377f0a8e5760d",
+ "grader/hidden/php9.cnf": "026f8b7061585ae8f0c983bb57c72935426775f31f4a04c03035c9af8377c052",
+ "grader/instances/coloring12.json": "35bf2799e815e4d861ddae8fdf08e65bcda2f8ae320780ae148335728268d3ed",
+ "grader/instances/rand150.cnf": "4bed20107d5ab7c6e705d970826df4efcbd47008fe63f3bc26b5de55c6b82dcf",
+ "grader/instances/expected.json": "fa524ab2ab9d7e0311a4a3288f08beec2c28b346f7a4f96bfdc3cae2749d6603",
+ "grader/instances/php7.cnf": "025c015d04a706c3f6c2156a9513958ba8ef62a6fbf613109d6efd0c858fbe02",
+ "grader/instances/rand250.cnf": "8c726d555091b58ed58f023539bbc6eee24760fa2d612d3d86fb6157e8204796",
+ "grader/instances/coloring12.cnf": "f11f084c6048116296461e295b2e4ec3a90e210bd58c9e07a847901445223973",
+ "grader/instances/php8.cnf": "9d3cf44ea2c5ff0475e8ace839471cd56afbe7f08c421d4a9539c0e32ac8cc1e",
+ "grader/instances/rand200.cnf": "e137064a686e5e5a05478e27e32c6fa295cc3d336f0b9fcfdfd53bc85fa3c0e9"
+}

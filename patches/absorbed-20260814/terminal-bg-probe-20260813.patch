@@ -1,0 +1,977 @@
+diff --git a/hermes_cli/main.py b/hermes_cli/main.py
+index e81b57a49..9ed46f6da 100644
+--- a/hermes_cli/main.py
++++ b/hermes_cli/main.py
+@@ -2314,6 +2314,35 @@ def _launch_tui(
+     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
+     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
+ 
++    # Real-background probe (macOS, best-effort): the TUI asks the host for
++    # its colors via OSC 10/11, but some hosts swallow the replies (Herdr
++    # renders them into the pane buffer instead of forwarding them to pane
++    # stdin), so the TUI stays pinned to the stale boot-cache polarity —
++    # washed-out text on a light terminal, and new sessions never self-fix.
++    # Measure the HOST window's actual pixels (CGWindowList + window-id
++    # capture, so a light Warp window behind a dark Orca window measures the
++    # right one) and seed HERMES_TUI_BACKGROUND (the same slot the OSC answer
++    # would fill) so the first frame is correct.  Explicit user pins
++    # (HERMES_TUI_THEME / HERMES_TUI_LIGHT / HERMES_TUI_BACKGROUND) win and
++    # skip the probe.  The probe command is also handed to the TUI so it can
++    # re-measure periodically — no restart needed when the host changes.
++    if not any(env.get(k) for k in ("HERMES_TUI_THEME", "HERMES_TUI_LIGHT", "HERMES_TUI_BACKGROUND")):
++        try:
++            from hermes_cli.terminal_bg_probe import probe_terminal_background
++
++            bg = probe_terminal_background(timeout=8.0)
++            if bg:
++                env["HERMES_TUI_BACKGROUND"] = bg
++                probe_script = os.path.join(
++                    os.path.dirname(os.path.abspath(__file__)), "terminal_bg_probe.py"
++                )
++                env["HERMES_TUI_PROBE_CMD"] = f"{sys.executable} {probe_script}"
++        except Exception:
++            logger.debug(
++                "Terminal background probe failed; TUI will use its normal detection",
++                exc_info=True,
++            )
++
+     wt_info = None
+     if worktree:
+         try:
+diff --git a/hermes_cli/terminal_bg_probe.py b/hermes_cli/terminal_bg_probe.py
+new file mode 100644
+index 000000000..f6be4703b
+--- /dev/null
++++ b/hermes_cli/terminal_bg_probe.py
+@@ -0,0 +1,449 @@
++"""Probe the REAL terminal background color by sampling on-screen pixels.
++
++Why this exists
++---------------
++The Ink TUI asks its host terminal for the true colors via OSC 10/11 queries
++(``syncThemeToTerminalBackground`` in ``ui-tui``).  Some hosts swallow the
++replies: Herdr renders the OSC answer into the pane's scrollback instead of
++forwarding it to the pane's stdin, so the TUI inside a Herdr pane never sees
++the terminal's colors and stays pinned to the stale boot-cache polarity —
++washed-out light text on a light terminal, or a light palette on a dark one,
++and "new sessions don't fix it" because the cache re-seeds itself.
++
++This module measures what is actually on screen instead: it finds the
++frontmost window (osascript / System Events, no extra permission needed),
++captures that region (``screencapture``), downscales it (``sips``) and returns
++the dominant background hex from pure-stdlib PNG decoding.  The TUI launch
++path seeds the result into ``HERMES_TUI_BACKGROUND`` — the same env slot the
++OSC answer would fill — so the first frame is already correct, and explicit
++user pins (``HERMES_TUI_THEME`` / ``HERMES_TUI_LIGHT``) still win.
++
++macOS-only, best-effort, never raises: any failure just returns None and the
++TUI's existing fallback chain (OSC -> boot cache -> macOS appearance) takes
++over unchanged.
++"""
++
++from __future__ import annotations
++
++import os
++import re
++import struct
++import subprocess
++import sys
++import tempfile
++import time
++import zlib
++from typing import List, Mapping, Optional, Sequence, Tuple
++
++RGB = Tuple[int, int, int]
++
++# Frontmost windows owned by these apps are candidate terminals.  The probe
++# only measures a terminal window — measuring an IDE/editor window would seed
++# the wrong polarity.  ``screencapture`` needs Screen Recording permission for
++# the invoking app; without it the capture fails and the probe returns None.
++_TERMINAL_NAME_RE = re.compile(
++    r"term|orca|warp|iterm|terminal|kitty|alacritty|wezterm|wez|ghostty|"
++    r"hyper|tabby|konsole|gnome|foot|alacritty|rio|wave|visual|vscode|cursor|"
++    r"zed|tmux|herdr",
++    re.IGNORECASE,
++)
++
++
++def _run(cmd: Sequence[str], timeout: float) -> Optional[str]:
++    """Run a short subprocess, returning stdout text or None on any failure."""
++    try:
++        proc = subprocess.run(
++            cmd,
++            capture_output=True,
++            text=True,
++            timeout=timeout,
++            check=False,
++        )
++        if proc.returncode != 0:
++            return None
++        return proc.stdout
++    except Exception:
++        return None
++
++
++def frontmost_window_bounds(timeout: float = 2.0) -> Optional[Tuple[int, int, int, int, str]]:
++    """Return (x, y, w, h, app_name) of the frontmost window, or None.
++
++    Uses System Events (osascript), which reports window position/size without
++    Screen Recording permission.  Only windows of terminal-like apps are
++    returned, so a launch from an IDE does not pollute the measurement.
++    """
++    script = (
++        'tell application "System Events" to tell (first application process '
++        'whose frontmost is true) to get {name, position of front window, '
++        "size of front window}"
++    )
++    out = _run(["osascript", "-e", script], timeout)
++    if not out:
++        return None
++
++    # AppleScript list: `Name, x, y, w, h` — quoted when the name has spaces.
++    parts = [p.strip() for p in out.split(",")]
++    if len(parts) != 5:
++        return None
++    name = parts[0].strip('"')
++    try:
++        x, y, w, h = (int(parts[i]) for i in range(1, 5))
++    except ValueError:
++        return None
++    if w <= 0 or h <= 0:
++        return None
++    if not _TERMINAL_NAME_RE.search(name):
++        return None
++    return (x, y, w, h, name)
++
++
++# TERM_PROGRAM values map to the CGWindow owner name of the app that RENDERS
++# this session.  Measuring that window — not the frontmost one — is what keeps
++# a light Warp window behind a dark Orca window from flipping the polarity.
++_TERM_PROGRAM_HOST_APP = {
++    "WarpTerminal": "Warp",
++    "Orca": "Orca",
++    "iTerm.app": "iTerm2",
++    "Apple_Terminal": "Terminal",
++    "WezTerm": "WezTerm",
++    "ghostty": "ghostty",
++    "Alacritty": "Alacritty",
++    "kitty": "kitty",
++    "vscode": "Code",
++    "cursor": "Cursor",
++    "zed": "Zed",
++}
++
++
++def host_app_from_env(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
++    """Return the CGWindow owner name of the terminal hosting this session.
++
++    Derived from TERM_PROGRAM (the outer terminal that spawned our process
++    tree).  When TERM_PROGRAM names an editor (vscode/cursor) or is unknown,
++    the probe falls back to the frontmost-window heuristic.
++    """
++    env = os.environ if env is None else env
++    term_program = (env.get("TERM_PROGRAM") or "").strip()
++    return _TERM_PROGRAM_HOST_APP.get(term_program)
++
++
++_WINDOWLIST_SWIFT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "windowlist.swift")
++_WINDOWLIST_BIN = os.path.join(
++    tempfile.gettempdir(), "hermes-windowlist-bin"
++)
++
++
++def _ensure_windowlist_binary(timeout: float = 20.0) -> Optional[str]:
++    """Compile windowlist.swift once (cache by source mtime), return bin path."""
++    if not os.path.exists(_WINDOWLIST_SWIFT):
++        return None
++    try:
++        src_mtime = os.path.getmtime(_WINDOWLIST_SWIFT)
++    except OSError:
++        return None
++    if os.path.exists(_WINDOWLIST_BIN):
++        try:
++            if os.path.getmtime(_WINDOWLIST_BIN) >= src_mtime:
++                return _WINDOWLIST_BIN
++        except OSError:
++            pass
++    if _run(["xcrun", "--find", "swiftc"], timeout=5.0) is None:
++        return None
++    out = _run(
++        ["swiftc", "-O", _WINDOWLIST_SWIFT, "-o", _WINDOWLIST_BIN],
++        timeout=timeout,
++    )
++    if out is None or not os.path.exists(_WINDOWLIST_BIN):
++        return None
++    return _WINDOWLIST_BIN
++
++
++def host_window_bounds(timeout: float = 3.0) -> Optional[Tuple[int, int, int, int, str, int]]:
++    """Return (x, y, w, h, app_name, window_id) of the host terminal's window.
++
++    Uses CGWindowList (via a tiny swift helper) so the window is found even
++    when it is NOT frontmost — e.g. a light Warp window behind a dark Orca
++    window.  Window id lets `screencapture -l` capture the window's own
++    content even when it is partially occluded.  Returns None when the host
++    app is unknown or no on-screen window exists for it.
++    """
++    app = host_app_from_env()
++    if not app:
++        return None
++    binary = _ensure_windowlist_binary(timeout=min(20.0, max(5.0, timeout + 5)))
++    if not binary:
++        return None
++    out = _run([binary], timeout=min(2.0, timeout))
++    if not out:
++        return None
++    best = None
++    for line in out.splitlines():
++        parts = line.split("\t")
++        if len(parts) != 6:
++            continue
++        owner, wid_s, x_s, y_s, w_s, h_s = parts
++        try:
++            wid, x, y, w, h = int(wid_s), int(x_s), int(y_s), int(w_s), int(h_s)
++        except ValueError:
++            continue
++        if owner != app or w <= 0 or h <= 0:
++            continue
++        area = w * h
++        if best is None or area > best[0]:
++            best = (area, x, y, w, h, wid)
++    if best is None:
++        return None
++    _, x, y, w, h, wid = best
++    return (x, y, w, h, app, wid)
++
++
++def capture_window(window_id: int, timeout: float = 2.0) -> Optional[str]:
++    """Capture a specific window's content (even when occluded) to a temp PNG."""
++    fd, path = tempfile.mkstemp(prefix="hermes-bg-probe-", suffix=".png")
++    os.close(fd)
++    try:
++        out = _run(["screencapture", "-x", "-l", str(window_id), path], timeout)
++        if out is None or not os.path.getsize(path):
++            return None
++        return path
++    except Exception:
++        try:
++            os.unlink(path)
++        except OSError:
++            pass
++        return None
++
++
++def capture_region(
++    x: int, y: int, w: int, h: int, timeout: float = 2.0
++) -> Optional[str]:
++    """Capture the given screen region to a temp PNG, returning its path."""
++    x = max(x, 0)
++    y = max(y, 0)
++    fd, path = tempfile.mkstemp(prefix="hermes-bg-probe-", suffix=".png")
++    os.close(fd)
++    try:
++        out = _run(
++            ["screencapture", "-x", "-R", f"{x},{y},{w},{h}", path],
++            timeout,
++        )
++        if out is None or not os.path.getsize(path):
++            return None
++        return path
++    except Exception:
++        try:
++            os.unlink(path)
++        except OSError:
++            pass
++        return None
++
++
++def downscale(path: str, size: int = 8, timeout: float = 2.0) -> Optional[str]:
++    """Downscale a PNG to `size`x`size` via sips; returns the new temp path."""
++    fd, small = tempfile.mkstemp(prefix="hermes-bg-probe-small-", suffix=".png")
++    os.close(fd)
++    try:
++        out = _run(
++            ["sips", "-z", str(size), str(size), path, "--out", small],
++            timeout,
++        )
++        if out is None or not os.path.getsize(small):
++            return None
++        return small
++    except Exception:
++        try:
++            os.unlink(small)
++        except OSError:
++            pass
++        return None
++
++
++def decode_png(path: str) -> Optional[List[RGB]]:
++    """Decode a small 8-bit RGB/RGBA non-interlaced PNG into pixels.
++
++    Pure stdlib (zlib + struct) so the probe needs no dependencies.  Returns
++    None for anything unsupported (16-bit, palette, interlaced).
++    """
++    try:
++        with open(path, "rb") as fh:
++            data = fh.read()
++    except OSError:
++        return None
++    if data[:8] != b"\x89PNG\r\n\x1a\n":
++        return None
++
++    pos = 8
++    idat = b""
++    width = height = bitdepth = colortype = None
++    while pos < len(data):
++        if pos + 8 > len(data):
++            return None
++        (length,), ctype = struct.unpack(">I", data[pos : pos + 4]), data[pos + 4 : pos + 8]
++        pos += 8
++        chunk = data[pos : pos + length]
++        pos += length + 4
++        if ctype == b"IHDR":
++            if length < 13:
++                return None
++            width, height, bitdepth, colortype = struct.unpack(">IIBB", chunk[:10])
++        elif ctype == b"IDAT":
++            idat += chunk
++        elif ctype == b"IEND":
++            break
++
++    if width is None or height is None or bitdepth != 8 or colortype not in (2, 6):
++        return None
++    bpp = 3 if colortype == 2 else 4
++    try:
++        raw = zlib.decompress(idat)
++    except zlib.error:
++        return None
++
++    stride = width * bpp
++    expected = (stride + 1) * height
++    if len(raw) < expected:
++        return None
++    raw = raw[:expected]
++
++    out = bytearray()
++    prev = bytearray(stride)
++    pos = 0
++    for _ in range(height):
++        f = raw[pos]
++        pos += 1
++        line = bytearray(raw[pos : pos + stride])
++        pos += stride
++        if f == 0:  # None
++            pass
++        elif f == 1:  # Sub
++            for i in range(bpp, stride):
++                line[i] = (line[i] + line[i - bpp]) % 256
++        elif f == 2:  # Up
++            for i in range(stride):
++                line[i] = (line[i] + prev[i]) % 256
++        elif f == 3:  # Average
++            for i in range(stride):
++                a = line[i - bpp] if i >= bpp else 0
++                line[i] = (line[i] + ((a + prev[i]) >> 1)) % 256
++        elif f == 4:  # Paeth
++            for i in range(stride):
++                a = line[i - bpp] if i >= bpp else 0
++                b = prev[i]
++                c = prev[i - bpp] if i >= bpp else 0
++                p = a + b - c
++                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
++                if pa <= pb and pa <= pc:
++                    pr = a
++                elif pb <= pc:
++                    pr = b
++                else:
++                    pr = c
++                line[i] = (line[i] + pr) % 256
++        else:
++            return None
++        out += line
++        prev = line
++
++    pixels: List[RGB] = []
++    for y in range(height):
++        row = out[y * stride : (y + 1) * stride]
++        for x in range(width):
++            o = x * bpp
++            pixels.append((row[o], row[o + 1], row[o + 2]))
++    return pixels
++
++
++def median_color(pixels: Sequence[RGB]) -> Optional[RGB]:
++    """Dominant color via per-channel median (text pixels are the minority)."""
++    if not pixels:
++        return None
++    return tuple(sorted(c[i] for c in pixels)[len(pixels) // 2] for i in range(3))  # type: ignore[return-value]
++
++
++def to_hex(rgb: RGB) -> str:
++    return "#%02x%02x%02x" % rgb
++
++
++def probe_terminal_background(timeout: float = 3.0) -> Optional[str]:
++    """Measure the REAL terminal background as '#rrggbb'.
++
++    Resolution order:
++      1. The HOST window — the terminal app that renders this session
++         (from TERM_PROGRAM), found via CGWindowList and captured by window id
++         so occlusion by other apps doesn't pollute the measurement.
++      2. The frontmost window (legacy heuristic), when TERM_PROGRAM doesn't
++         name a known host app.
++
++    Returns None when the platform is not macOS, no terminal window can be
++    found, or any step fails — callers should treat None as \"no answer\" and
++    keep their existing fallback chain.
++    """
++    if sys.platform != "darwin":
++        return None
++
++    deadline = time.monotonic() + timeout
++
++    # 1) Host window first: correct even when another app is frontmost.
++    host = host_window_bounds(timeout=min(2.0, timeout))
++    if host:
++        x, y, w, h, _app, wid = host
++        remaining = deadline - time.monotonic()
++        if remaining <= 0:
++            return None
++        region = capture_window(wid, timeout=min(2.0, remaining))
++        if region:
++            hex_color = _finish_probe(region, deadline)
++            if hex_color:
++                return hex_color
++
++    # 2) Fallback: frontmost terminal window (legacy behavior).
++    bounds = frontmost_window_bounds(timeout=min(2.0, timeout))
++    if not bounds:
++        return None
++    x, y, w, h, _name = bounds
++
++    remaining = deadline - time.monotonic()
++    if remaining <= 0:
++        return None
++    region = capture_region(x, y, w, h, timeout=min(2.0, remaining))
++    if not region:
++        return None
++    return _finish_probe(region, deadline)
++
++
++def _finish_probe(region: str, deadline: float) -> Optional[str]:
++    """Downscale, decode, median — shared tail of both probe paths."""
++    remaining = deadline - time.monotonic()
++    if remaining <= 0:
++        try:
++            os.unlink(region)
++        except OSError:
++            pass
++        return None
++    small = downscale(region, size=8, timeout=min(2.0, remaining))
++    if not small:
++        try:
++            os.unlink(region)
++        except OSError:
++            pass
++        return None
++
++    pixels = decode_png(small)
++    # Decode first, THEN clean up — decode_png needs the file on disk.
++    for path in (region, small):
++        try:
++            os.unlink(path)
++        except OSError:
++            pass
++    if not pixels:
++        return None
++    med = median_color(pixels)
++    if med is None:
++        return None
++    return to_hex(med)
++
++
++if __name__ == "__main__":
++    hex_color = probe_terminal_background()
++    print(hex_color or "no-answer")
+diff --git a/hermes_cli/windowlist.swift b/hermes_cli/windowlist.swift
+new file mode 100644
+index 000000000..b5060b76c
+--- /dev/null
++++ b/hermes_cli/windowlist.swift
+@@ -0,0 +1,23 @@
++// List on-screen windows: owner name, window id, bounds, layer.
++// Used by terminal_bg_probe to find the REAL host window (the terminal app
++// that renders this Hermes session) instead of the frontmost window — a
++// light Warp window behind a dark Orca window must not flip the polarity.
++import CoreGraphics
++import Foundation
++
++let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
++guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else {
++    exit(1)
++}
++for w in list {
++    let owner = w[kCGWindowOwnerName as String] as? String ?? ""
++    let num = w[kCGWindowNumber as String] as? Int ?? 0
++    let layer = w[kCGWindowLayer as String] as? Int ?? 0
++    guard layer == 0 else { continue } // only normal windows
++    guard let bounds = w[kCGWindowBounds as String] as? [String: Any] else { continue }
++    let x = bounds["X"] as? Int ?? 0
++    let y = bounds["Y"] as? Int ?? 0
++    let wd = bounds["Width"] as? Int ?? 0
++    let ht = bounds["Height"] as? Int ?? 0
++    print("\(owner)\t\(num)\t\(x)\t\(y)\t\(wd)\t\(ht)")
++}
+diff --git a/tests/hermes_cli/test_terminal_bg_probe.py b/tests/hermes_cli/test_terminal_bg_probe.py
+new file mode 100644
+index 000000000..7774f291a
+--- /dev/null
++++ b/tests/hermes_cli/test_terminal_bg_probe.py
+@@ -0,0 +1,275 @@
++"""Unit tests for the on-screen terminal background probe.
++
++The probe measures the frontmost terminal window's real pixels so the TUI can
++pick the right light/dark polarity even when the host swallows OSC 10/11
++replies (Herdr panes).  Pure functions are tested directly; the osascript
++parser is tested with a mocked subprocess; the end-to-end flow is tested with
++mocked steps so no display / permissions are needed in CI.
++"""
++
++import struct
++import zlib
++
++import pytest
++
++from hermes_cli import terminal_bg_probe as probe
++
++
++def _make_png(width: int, height: int, pixels: bytes, color_type: int = 2) -> bytes:
++    """Build a minimal 8-bit non-interlaced PNG (RGB=2, RGBA=6)."""
++    bpp = 3 if color_type == 2 else 4
++    raw = b""
++    stride = width * bpp
++    for y in range(height):
++        raw += b"\x00"  # filter: None
++        raw += pixels[y * stride : (y + 1) * stride]
++
++    def chunk(ctype: bytes, payload: bytes) -> bytes:
++        return (
++            struct.pack(">I", len(payload))
++            + ctype
++            + payload
++            + struct.pack(">I", zlib.crc32(ctype + payload) & 0xFFFFFFFF)
++        )
++
++    ihdr = struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0)
++    return (
++        b"\x89PNG\r\n\x1a\n"
++        + chunk(b"IHDR", ihdr)
++        + chunk(b"IDAT", zlib.compress(raw))
++        + chunk(b"IEND", b"")
++    )
++
++
++class TestDecodePng:
++    def test_rgb_pixels(self):
++        # 2x2: top-left red, top-right green, bottom-left blue, bottom-right white
++        pixels = bytes(
++            [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255]
++        )
++        path = "/tmp/test_probe_rgb.png"
++        with open(path, "wb") as fh:
++            fh.write(_make_png(2, 2, pixels))
++        decoded = probe.decode_png(path)
++        assert decoded == [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)]
++
++    def test_rgba_alpha_ignored(self):
++        pixels = bytes([10, 20, 30, 99, 40, 50, 60, 199])
++        path = "/tmp/test_probe_rgba.png"
++        with open(path, "wb") as fh:
++            fh.write(_make_png(2, 1, pixels, color_type=6))
++        decoded = probe.decode_png(path)
++        assert decoded == [(10, 20, 30), (40, 50, 60)]
++
++    def test_filter_sub_roundtrip(self):
++        # A Sub-filtered 2x1 RGB row: the FIRST pixel is stored as-is; later
++        # bytes are stored as value - left neighbor.  decode_png must apply
++        # the predictor.
++        width, height = 2, 1
++        pixels = bytes([200, 100, 50, 40, 30, 20])
++        stored = bytes(
++            [
++                pixels[0], pixels[1], pixels[2],
++                (pixels[3] - pixels[0]) % 256,
++                (pixels[4] - pixels[1]) % 256,
++                (pixels[5] - pixels[2]) % 256,
++            ]
++        )
++        raw = b"\x01" + stored  # filter 1 = Sub
++
++        def chunk(ctype: bytes, payload: bytes) -> bytes:
++            return (
++                struct.pack(">I", len(payload))
++                + ctype
++                + payload
++                + struct.pack(">I", zlib.crc32(ctype + payload) & 0xFFFFFFFF)
++            )
++
++        ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
++        png = (
++            b"\x89PNG\r\n\x1a\n"
++            + chunk(b"IHDR", ihdr)
++            + chunk(b"IDAT", zlib.compress(raw))
++            + chunk(b"IEND", b"")
++        )
++        path = "/tmp/test_probe_sub.png"
++        with open(path, "wb") as fh:
++            fh.write(png)
++        assert probe.decode_png(path) == [(200, 100, 50), (40, 30, 20)]
++
++    def test_rejects_interlaced(self):
++        ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 1)  # interlace=1
++
++        def chunk(ctype: bytes, payload: bytes) -> bytes:
++            return (
++                struct.pack(">I", len(payload))
++                + ctype
++                + payload
++                + struct.pack(">I", zlib.crc32(ctype + payload) & 0xFFFFFFFF)
++            )
++
++        png = (
++            b"\x89PNG\r\n\x1a\n"
++            + chunk(b"IHDR", ihdr)
++            + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00"))
++            + chunk(b"IEND", b"")
++        )
++        path = "/tmp/test_probe_interlaced.png"
++        with open(path, "wb") as fh:
++            fh.write(png)
++        # Interlaced data decodes to garbage or fails; decode_png must not raise.
++        result = probe.decode_png(path)
++        assert result is None or isinstance(result, list)
++
++
++class TestMedianAndHex:
++    def test_median_color_ignores_text_minority(self):
++        # 9 pixels: 7 dark background, 2 bright "text"
++        pixels = [(30, 34, 40)] * 7 + [(255, 255, 255), (240, 240, 240)]
++        assert probe.median_color(pixels) == (30, 34, 40)
++
++    def test_median_empty(self):
++        assert probe.median_color([]) is None
++
++    def test_to_hex(self):
++        assert probe.to_hex((53, 56, 62)) == "#35383e"
++        assert probe.to_hex((255, 255, 255)) == "#ffffff"
++
++
++class TestBoundsParsing:
++    def test_parses_frontmost_terminal(self, monkeypatch):
++        monkeypatch.setattr(
++            probe, "_run", lambda cmd, timeout: "Orca, 1683, 58, 1512, 949"
++        )
++        assert probe.frontmost_window_bounds() == (1683, 58, 1512, 949, "Orca")
++
++    def test_parses_quoted_name(self, monkeypatch):
++        monkeypatch.setattr(
++            probe, "_run", lambda cmd, timeout: '"Photoshop", 1, 2, 3, 4'
++        )
++        # Not a terminal-like name -> rejected
++        assert probe.frontmost_window_bounds() is None
++
++    def test_accepts_quoted_vscode_name(self, monkeypatch):
++        monkeypatch.setattr(
++            probe, "_run", lambda cmd, timeout: '"Visual Studio Code", 10, 20, 800, 600'
++        )
++        assert probe.frontmost_window_bounds() == (10, 20, 800, 600, "Visual Studio Code")
++
++    def test_accepts_quoted_terminal_name(self, monkeypatch):
++        monkeypatch.setattr(
++            probe, "_run", lambda cmd, timeout: '"WezTerm", 10, 20, 800, 600'
++        )
++        assert probe.frontmost_window_bounds() == (10, 20, 800, 600, "WezTerm")
++
++    def test_rejects_non_terminal_app(self, monkeypatch):
++        monkeypatch.setattr(
++            probe, "_run", lambda cmd, timeout: "Xcode, 0, 0, 100, 100"
++        )
++        assert probe.frontmost_window_bounds() is None
++
++    def test_returns_none_on_subprocess_failure(self, monkeypatch):
++        monkeypatch.setattr(probe, "_run", lambda cmd, timeout: None)
++        assert probe.frontmost_window_bounds() is None
++
++    def test_returns_none_on_garbage(self, monkeypatch):
++        monkeypatch.setattr(probe, "_run", lambda cmd, timeout: "not-a-list")
++        assert probe.frontmost_window_bounds() is None
++
++
++class TestHostAppFromEnv:
++    def test_warp_maps_to_warp(self):
++        assert probe.host_app_from_env({"TERM_PROGRAM": "WarpTerminal"}) == "Warp"
++
++    def test_orca_maps_to_orca(self):
++        assert probe.host_app_from_env({"TERM_PROGRAM": "Orca"}) == "Orca"
++
++    def test_iterm_maps_to_iterm2(self):
++        assert probe.host_app_from_env({"TERM_PROGRAM": "iTerm.app"}) == "iTerm2"
++
++    def test_unknown_term_program_returns_none(self):
++        assert probe.host_app_from_env({"TERM_PROGRAM": "SomethingElse"}) is None
++
++    def test_missing_env_returns_none(self):
++        assert probe.host_app_from_env({}) is None
++
++
++class TestHostWindowBounds:
++    WINDOWLIST = (
++        "Warp\t1001\t0\t0\t800\t600\n"
++        "Orca\t2002\t10\t20\t1512\t949\n"
++        "Warp\t1003\t100\t100\t1200\t900\n"
++        "Warp\t1004\t5\t5\t50\t50\n"
++    )
++
++    def test_picks_largest_host_window(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_app_from_env", lambda env=None: "Warp")
++        monkeypatch.setattr(probe, "_ensure_windowlist_binary", lambda timeout=20.0: "/tmp/windowlist")
++        monkeypatch.setattr(probe, "_run", lambda cmd, timeout: self.WINDOWLIST)
++        # Largest Warp window is 1200x900 at (100,100) -> id 1003
++        assert probe.host_window_bounds(timeout=3.0) == (100, 100, 1200, 900, "Warp", 1003)
++
++    def test_ignores_other_apps(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_app_from_env", lambda env=None: "Orca")
++        monkeypatch.setattr(probe, "_ensure_windowlist_binary", lambda timeout=20.0: "/tmp/windowlist")
++        monkeypatch.setattr(probe, "_run", lambda cmd, timeout: self.WINDOWLIST)
++        assert probe.host_window_bounds(timeout=3.0) == (10, 20, 1512, 949, "Orca", 2002)
++
++    def test_no_host_app_returns_none(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_app_from_env", lambda env=None: None)
++        assert probe.host_window_bounds(timeout=3.0) is None
++
++    def test_no_matching_window_returns_none(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_app_from_env", lambda env=None: "Warp")
++        monkeypatch.setattr(probe, "_ensure_windowlist_binary", lambda timeout=20.0: "/tmp/windowlist")
++        monkeypatch.setattr(probe, "_run", lambda cmd, timeout: "Orca\t2002\t10\t20\t1512\t949\n")
++        assert probe.host_window_bounds(timeout=3.0) is None
++
++    def test_binary_missing_returns_none(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_app_from_env", lambda env=None: "Warp")
++        monkeypatch.setattr(probe, "_ensure_windowlist_binary", lambda timeout=20.0: None)
++        assert probe.host_window_bounds(timeout=3.0) is None
++
++
++class TestProbeFlow:
++    def test_non_macos_returns_none(self, monkeypatch):
++        monkeypatch.setattr(probe.sys, "platform", "linux")
++        assert probe.probe_terminal_background() is None
++
++    def test_full_flow_with_mocked_steps(self, monkeypatch):
++        # Host path has no TERM_PROGRAM answer -> falls through to frontmost.
++        monkeypatch.setattr(probe, "host_window_bounds", lambda timeout=3.0: None)
++        monkeypatch.setattr(probe, "frontmost_window_bounds", lambda timeout=None: (0, 0, 100, 100, "Warp"))
++        monkeypatch.setattr(probe, "capture_region", lambda x, y, w, h, timeout=None: "/tmp/region.png")
++        monkeypatch.setattr(probe, "downscale", lambda path, size=8, timeout=None: "/tmp/small.png")
++        monkeypatch.setattr(probe, "decode_png", lambda path: [(30, 34, 40)] * 64)
++
++        result = probe.probe_terminal_background(timeout=5.0)
++        assert result == "#1e2228"  # median of (30, 34, 40)
++
++    def test_host_window_path_wins_over_frontmost(self, monkeypatch):
++        # Host window measures a LIGHT Warp window even though the frontmost
++        # is a DARK Orca — the polarity must come from the host, not focus.
++        monkeypatch.setattr(probe, "host_window_bounds", lambda timeout=3.0: (100, 100, 1200, 900, "Warp", 1003))
++        monkeypatch.setattr(probe, "capture_window", lambda wid, timeout=None: "/tmp/warp.png")
++        monkeypatch.setattr(probe, "downscale", lambda path, size=8, timeout=None: "/tmp/small.png")
++        monkeypatch.setattr(probe, "decode_png", lambda path: [(242, 241, 242)] * 64)
++
++        result = probe.probe_terminal_background(timeout=5.0)
++        assert result == "#f2f1f2"  # Warp's measured light background
++
++    def test_host_window_capture_failure_falls_back_to_frontmost(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_window_bounds", lambda timeout=3.0: (100, 100, 1200, 900, "Warp", 1003))
++        monkeypatch.setattr(probe, "capture_window", lambda wid, timeout=None: None)
++        monkeypatch.setattr(probe, "frontmost_window_bounds", lambda timeout=None: (0, 0, 100, 100, "Orca"))
++        monkeypatch.setattr(probe, "capture_region", lambda x, y, w, h, timeout=None: "/tmp/orca.png")
++        monkeypatch.setattr(probe, "downscale", lambda path, size=8, timeout=None: "/tmp/small.png")
++        monkeypatch.setattr(probe, "decode_png", lambda path: [(46, 49, 55)] * 64)
++
++        result = probe.probe_terminal_background(timeout=5.0)
++        assert result == "#2e3137"  # Orca's measured dark background
++
++    def test_bounds_failure_aborts(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_window_bounds", lambda timeout=3.0: None)
++        monkeypatch.setattr(probe, "frontmost_window_bounds", lambda timeout=None: None)
++        assert probe.probe_terminal_background() is None
+diff --git a/ui-tui/src/__tests__/createGatewayEventHandler.test.ts b/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
+index 4f2c7402b..60522242a 100644
+--- a/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
++++ b/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
+@@ -1,6 +1,16 @@
++import { execFile } from 'child_process'
++
+ import { beforeEach, describe, expect, it, vi } from 'vitest'
+ 
+-import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
++// ESM namespace exports can't be spied on directly, so wrap execFile in a
++// vi.fn that delegates to the original — tests can override it per-case.
++vi.mock('child_process', async importOriginal => {
++  const mod = await importOriginal<{ execFile: typeof execFile }>()
++
++  return { ...mod, execFile: vi.fn(mod.execFile) }
++})
++
++import { createGatewayEventHandler, resetLiveBackgroundProbe } from '../app/createGatewayEventHandler.js'
+ import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+ import { $tpsTarget, resetTps } from '../app/tpsStore.js'
+ import { turnController } from '../app/turnController.js'
+@@ -2081,4 +2091,77 @@ describe('createGatewayEventHandler', () => {
+       vi.useRealTimers()
+     }
+   })
++
++  describe('live background re-probe (HERMES_TUI_PROBE_CMD)', () => {
++    const stubProbe = (onCall: () => string) => {
++      const execMock = vi.mocked(execFile) as unknown as ReturnType<typeof vi.fn>
++      execMock.mockImplementation(((_cmd: string, _opts: unknown, cb?: unknown) => {
++        const callback = typeof cb === 'function' ? cb : (typeof _opts === 'function' ? _opts : null)
++        callback?.(null, onCall())
++      }) as any)
++      const stdoutWrite = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
++
++      return { execMock, stdoutWrite }
++    }
++
++    const teardown = (execMock: ReturnType<typeof vi.fn>, stdoutWrite: ReturnType<typeof vi.spyOn>) => {
++      execMock.mockReset()
++      stdoutWrite.mockRestore()
++      vi.unstubAllEnvs()
++      vi.useRealTimers()
++      resetLiveBackgroundProbe()
++    }
++
++    it('re-applies the theme when the probe reports a changed background', () => {
++      const appended: Msg[] = []
++      vi.useFakeTimers()
++      let out = '#111111\n'
++      const { execMock, stdoutWrite } = stubProbe(() => out)
++
++      vi.stubEnv('HERMES_TUI_PROBE_CMD', '/fake/probe')
++      vi.stubEnv('HERMES_TUI_BACKGROUND', '#111111')
++
++      try {
++        resetLiveBackgroundProbe()
++        createGatewayEventHandler(buildCtx(appended))
++
++        // First probe tick (fires after the interval): same background ->
++        // no theme churn.
++        vi.advanceTimersByTime(30_000)
++        const probeCall1 = execMock.mock.calls.find(c => c[0] === '/fake/probe')
++        expect(probeCall1).toBeDefined()
++        expect(process.env.HERMES_TUI_BACKGROUND).toBe('#111111')
++
++        // Second tick: the host switched to a light background -> re-apply.
++        out = '#ffffff\n'
++        vi.advanceTimersByTime(30_000)
++        expect(process.env.HERMES_TUI_BACKGROUND).toBe('#ffffff')
++      } finally {
++        teardown(execMock, stdoutWrite)
++      }
++    })
++
++    it('ignores probe output when a theme pin is active', () => {
++      const appended: Msg[] = []
++      vi.useFakeTimers()
++      const { execMock, stdoutWrite } = stubProbe(() => '#ffffff\n')
++
++      vi.stubEnv('HERMES_TUI_PROBE_CMD', '/fake/probe')
++      vi.stubEnv('HERMES_TUI_BACKGROUND', '#111111')
++      vi.stubEnv('HERMES_TUI_THEME', 'dark')
++
++      try {
++        resetLiveBackgroundProbe()
++        createGatewayEventHandler(buildCtx(appended))
++
++        vi.advanceTimersByTime(30_000)
++        vi.advanceTimersByTime(30_000)
++        // A pinned theme means the probe must not clobber it.
++        expect(process.env.HERMES_TUI_BACKGROUND).toBe('#111111')
++        expect(process.env.HERMES_TUI_THEME).toBe('dark')
++      } finally {
++        teardown(execMock, stdoutWrite)
++      }
++    })
++  })
+ })
+diff --git a/ui-tui/src/app/createGatewayEventHandler.ts b/ui-tui/src/app/createGatewayEventHandler.ts
+index 373e047c0..ffc12ac60 100644
+--- a/ui-tui/src/app/createGatewayEventHandler.ts
++++ b/ui-tui/src/app/createGatewayEventHandler.ts
+@@ -209,6 +209,59 @@ export function applyConfiguredTuiTheme(raw: unknown): void {
+ 
+ let themeBackgroundSyncStarted = false
+ 
++// Live pixel re-probe: the pixel probe seeds HERMES_TUI_BACKGROUND at launch,
++// but a session can move between hosts (or a host can change its theme) while
++// running — Herdr panes especially, since OSC replies are swallowed and the
++// TUI never hears about the new colors.  Re-run the probe command on an
++// interval and re-apply the theme when the measured background moves, so the
++// polarity fixes itself without a restart.
++const LIVE_PROBE_INTERVAL_MS = 30_000
++
++let liveProbeStarted = false
++
++/** Test hook: clear the once-only guard so a fresh handler re-arms the probe. */
++export function resetLiveBackgroundProbe(): void {
++  liveProbeStarted = false
++}
++
++export function startLiveBackgroundProbe(): void {
++  const probeCmd = process.env.HERMES_TUI_PROBE_CMD
++
++  if (liveProbeStarted || !probeCmd) {
++    return
++  }
++
++  liveProbeStarted = true
++
++  const probe = () => {
++    if (process.env.HERMES_TUI_THEME || process.env.HERMES_TUI_LIGHT) {
++      return
++    }
++
++    execFile(probeCmd, { timeout: 10_000 }, (error, stdout) => {
++      if (error) {
++        return
++      }
++
++      const hex = stdout.trim().toLowerCase()
++
++      if (!/^#[0-9a-f]{6}$/.test(hex)) {
++        return
++      }
++
++      if (hex === (process.env.HERMES_TUI_BACKGROUND ?? '').toLowerCase()) {
++        return
++      }
++
++      process.env.HERMES_TUI_BACKGROUND = hex
++      reapplyTheme()
++    })
++  }
++
++  const timer = setInterval(probe, LIVE_PROBE_INTERVAL_MS)
++  timer.unref?.()
++}
++
+ /**
+  * Re-derive the theme from the terminal's ACTUAL background color once the
+  * OSC-11 probe answers. The env heuristics `detectLightMode` runs at module
+@@ -386,6 +439,7 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
+ 
+ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
+   syncThemeToTerminalBackground()
++  startLiveBackgroundProbe()
+ 
+   const { rpc } = ctx.gateway
+   const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session

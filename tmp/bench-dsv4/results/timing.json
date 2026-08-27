@@ -1,0 +1,27 @@
+{
+ "bench-dsv4-fl": {
+  "agent": "fl",
+  "model": "deepseek-v4-flash",
+  "effort": "ultra",
+  "t0": 1786573175.118931,
+  "launch_sec": 6.322995901107788,
+  "rc": 0
+ },
+ "bench-dsv4-pr": {
+  "agent": "pr",
+  "model": "deepseek-v4-pro",
+  "effort": "medium",
+  "t0": 1786573181.4422479,
+  "launch_sec": 5.861826181411743,
+  "rc": 0
+ },
+ "pl": {
+  "t0": 1786582714.377227,
+  "topic": "bench-dsv4-pl",
+  "config": "deepseek-v4-pro @ low"
+ },
+ "ge": {
+  "wall_s": 454,
+  "note": "gemini-3.7-flash-high via agy, t0=results/t0_ge.txt"
+ }
+}

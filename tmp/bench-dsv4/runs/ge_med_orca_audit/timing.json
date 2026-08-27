@@ -1,0 +1,16 @@
+{
+  "name": "ge-med-orca-audit",
+  "effort": "medium",
+  "model": "Gemini 3.7 Flash (Medium)",
+  "harness": "Orca Terminal Tab + agy Stop Audit & Mid-Turn Advisor",
+  "wall_s": 370.0,
+  "score": 98.3,
+  "partA_visible": 60.0,
+  "partA_hidden": 8.3,
+  "partB": 20.0,
+  "notes": 10.0,
+  "manifest_ok": true,
+  "anti_cheat_flags": 0,
+  "adv_holds": 6,
+  "adv_fired": 0
+}

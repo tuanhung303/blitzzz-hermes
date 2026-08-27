@@ -1,0 +1,91 @@
+diff --git a/tests/test_tui_gateway_server.py b/tests/test_tui_gateway_server.py
+index 009295ecb..4893ca4af 100644
+--- a/tests/test_tui_gateway_server.py
++++ b/tests/test_tui_gateway_server.py
+@@ -16027,6 +16027,32 @@ def test_get_usage_clamps_post_compression_sentinel():
+     assert "context_percent" not in usage
+ 
+ 
++def test_format_live_context_does_not_substitute_cumulative_total(monkeypatch):
++    """The /context read-out must not fall back to the lifetime session total
++    when context_used is absent — that substitutes a cumulative number for the
++    current occupancy and reads as an impossible ~1.9M / 272K on long
++    Codex/OAuth sessions (#50421 class)."""
++    session = {
++        "agent": None,
++        "history": [],
++        "session_key": None,
++        "history_lock": threading.Lock(),
++        "_compute_host_active": True,
++        "_metadata_mirror": {
++            "model": "gpt-5.6-sol",
++            "provider": "openai-codex",
++            "usage": {"total": 1_900_000, "context_max": 272_000},
++        },
++        "_metadata_message_count": 0,
++    }
++    monkeypatch.setattr(server, "_get_db", lambda: None)
++    out = server._format_live_context_output(session)
++    # Fail closed: the cumulative total must never surface as current context,
++    # and with occupancy unknown no "Context usage:" line is emitted at all.
++    assert "1,900,000" not in out
++    assert "Context usage" not in out
++
++
+ def test_get_usage_emits_window_without_occupancy():
+     """Before the first turn last_prompt_tokens is 0 — the status line must
+     still show the model's window (0/260k), not degrade to the 0/— fallback.
+diff --git a/tui_gateway/methods_session.py b/tui_gateway/methods_session.py
+index 27adddadf..c0b9c7b16 100644
+--- a/tui_gateway/methods_session.py
++++ b/tui_gateway/methods_session.py
+@@ -1393,7 +1393,7 @@ def _(rid, params: dict) -> dict:
+                 "context_max": usage.get("context_max", 0) or 0,
+                 "context_percent": usage.get("context_percent", 0) or 0,
+                 "context_used": usage.get("context_used", 0) or 0,
+-                "estimated_total": usage.get("context_used", 0) or usage.get("total", 0) or 0,
++                "estimated_total": usage.get("context_used", 0) or 0,
+                 "model": _metadata_mirror(session).get("model", ""),
+             },
+         )
+diff --git a/tui_gateway/server.py b/tui_gateway/server.py
+index dbabddc60..54d2fefe5 100644
+--- a/tui_gateway/server.py
++++ b/tui_gateway/server.py
+@@ -12964,7 +12964,11 @@ def _format_live_context_output(session: dict) -> str:
+     if model:
+         lines.append(f"Model: {model}")
+     lines.append(f"Provider: {provider}")
+-    context_used = int(usage.get("context_used") or usage.get("total") or 0)
++    # Never fall back to the lifetime session total for "current context":
++    # session_total_tokens is cumulative and would read as an impossible
++    # current-context value (e.g. ~1.9M / 272K) on long Codex/OAuth sessions.
++    # Mirrors the #50421 fix already applied in _get_usage.
++    context_used = int(usage.get("context_used") or 0)
+     context_max = int(usage.get("context_max") or 0)
+     if context_used:
+         if context_max:
+diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
+index b70f2a6e7..67f348617 100644
+--- a/ui-tui/src/components/appChrome.tsx
++++ b/ui-tui/src/components/appChrome.tsx
+@@ -906,8 +906,8 @@ export function StatusRule({
+     ? segs.compactCtx
+       ? `${fmtK(usage.context_used ?? 0)} tok`
+       : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+-    : usage.total > 0
+-      ? `${fmtK(usage.total)} tok`
++    : (usage.context_used ?? 0) > 0
++      ? `${fmtK(usage.context_used ?? 0)} tok`
+       : ''
+ 
+   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
+@@ -928,7 +928,7 @@ export function StatusRule({
+ 
+     const fixedContextText = usage.context_max
+       ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+-      : `${fmtK(usage.total)}/—`
++      : `${fmtK(usage.context_used ?? 0)}/—`
+ 
+     const fixedContextSuffix = compressionCount ? ` · cmp ${compressionCount}` : ''
+ 

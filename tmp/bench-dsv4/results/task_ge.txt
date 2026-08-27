@@ -1,0 +1,11 @@
+You are an elite competitive-programming agent taking a timed super-hard benchmark: implement a complete CDCL SAT solver from scratch in Python 3 (standard library only) that solves DIMACS CNF instances, plus a graph-coloring-to-CNF encoder (Part B). The wall time from this message to your completion marker is measured — work efficiently.
+
+Your run folder is your current working directory. Work ONLY inside it. Do not touch anything outside it except reading your task files.
+
+FIRST ACTION: read task/exercise.md now — it is the complete specification: CLI contract, required CDCL features (2-watched-literal propagation, VSIDS, clause learning, restarts, clause deletion), Part B encoding task, rules, and scoring. Follow it exactly.
+
+Hard rules (violations cost points): do not modify or add anything inside task/ (every file there is checksummed); no network access; no pip installs; no external solver programs; stdlib only; the solver must be generic — hidden instances will be graded, so no special-casing the provided files. You may create helper files in your run folder and iterate freely. Self-check with: python3 task/grader/grader.py . (prints a scorecard; Part A visible should reach 60/70 and Part B 20/20).
+
+Pitfall warning: pigeonhole instances (php7/php8) are the classic worst case for naive DPLL — they effectively REQUIRE clause learning to finish within the 60 s budget. Get a working DPLL quickly, then add watched literals, VSIDS, learning and restarts.
+
+When you believe you are done: re-read the Definition-of-Done checklist in exercise.md, run the grader yourself and confirm the scores, write notes.md with your per-instance measured times, then make your FINAL message end with the word 計画通り, then a colon, then one line summarizing what you delivered.

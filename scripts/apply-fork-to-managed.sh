@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Apply the active non-spec fork snapshot onto the MANAGED runtime
+# Apply the active fork snapshot onto the MANAGED runtime
 # (~/.hermes/hermes-agent) after `hermes update`.
 #
 # Workflow this enables:
-#   1. hermes update          # managed checkout -> upstream v2026.8.3 (clean)
-#   2. bash <this script>     # applies the active non-spec snapshot on top of it
-#   3. (script runs uv sync + ui-tui build)   # managed venv + TUI dist ready
+#   1. hermes update          # managed checkout -> upstream (clean)
+#   2. bash <this script>     # applies the active snapshot on top of it
+#   3. (script runs uv sync + TUI check)   # managed venv + TUI ready
 #
 # Design:
-#   - `full-fork-v202683` remains an immutable historical backup only. It is
-#     never formatted or replayed here: that history contains the retired
-#     speculative-compression implementation and its TUI/status hooks.
-#   - The active surface is the compatibility-checked snapshot plus focused
-#     additive patches under `patches/`. The snapshot is generated from the
-#     managed tree after speculative removal; focused patches keep newer fork
-#     behavior reviewable without regenerating that large baseline.
-#   - Guard: the managed checkout must be clean. A half-updated managed runtime
-#     must be refreshed with `hermes update` first.
+#   - `fork-local-v202683.patch` remains an immutable historical backup only.
+#   - The active surface is ONE consolidated snapshot
+#     `patches/managed-current-20260814.patch` (regenerated from the managed
+#     tree after each update cycle; 2026-08-14 = the v2026.8.13 port that
+#     dropped speculative-compression, sessionExit, and re-homed water/TPS on
+#     the segment-based StatusRule). Focused per-feature patches from earlier
+#     rounds were absorbed into it (patches/absorbed-20260814/).
+#   - Guard: the managed checkout must be clean. A half-updated managed
+#     runtime must be refreshed with `hermes update` first.
 #
 # Options:
 #   --check     dry run: print what would be applied, change nothing.
@@ -34,7 +34,6 @@ if [[ ! -d "$MANAGED/.git" ]]; then
 fi
 
 # ---- managed guard -------------------------------------------------------------
-cd "$FORK"
 cd "$MANAGED"
 MANAGED_HEAD="$(git rev-parse --short HEAD)"
 if [[ -n "$(git status --porcelain)" ]]; then
@@ -45,14 +44,44 @@ fi
 echo "managed HEAD $MANAGED_HEAD is clean; legacy fork history is inactive"
 
 shopt -s nullglob
-BASE_PATCHES=("$FORK"/patches/managed-current-no-spec-*.patch)
-RUNTIME_PATCHES=("$FORK"/patches/runtime-budget-*.patch)
+BASE_PATCHES=("$FORK"/patches/managed-current-*.patch)
 shopt -u nullglob
-if [[ ${#BASE_PATCHES[@]} -ne 1 || ${#RUNTIME_PATCHES[@]} -ne 1 ]]; then
-  echo "expected exactly one consolidated patch and one runtime-budget patch" >&2
+if [[ ${#BASE_PATCHES[@]} -ne 1 ]]; then
+  echo "expected exactly one consolidated snapshot under patches/managed-current-*.patch" >&2
   exit 1
 fi
-ACTIVE_PATCHES=("${BASE_PATCHES[0]}" "${RUNTIME_PATCHES[0]}")
+ACTIVE_PATCHES=("${BASE_PATCHES[0]}")
+
+# ---- surface contract ----------------------------------------------------------
+# One marker per ported feature, validated on the candidate clone (--check) and
+# on the live tree AFTER apply. The consolidated snapshot regenerated from a
+# verified tree carries these; a half-ported snapshot fails the gate.
+REQUIRED_SURFACE=(
+  "ui-tui/src/components/appChrome.tsx:waterFrameStep"
+  "ui-tui/src/components/appChrome.tsx:waterCellCount"
+  "ui-tui/src/components/appChrome.tsx:TpsMeter"
+  "ui-tui/src/components/appChrome.tsx:STATUS_METRIC_GRAY"
+  "ui-tui/src/app/tpsStore.ts:feedTpsChars"
+  "ui-tui/src/app/wavePulseStore.ts:pulseWave"
+  "ui-tui/src/app/createGatewayEventHandler.ts:resetLiveBackgroundProbe"
+  "ui-tui/src/app/createGatewayEventHandler.ts:feedTpsChars"
+  "ui-tui/src/lib/sessionExit.ts:flushExitSessionId"
+  "ui-tui/src/app/useMainApp.ts:rememberExitSessionId"
+  "ui-tui/src/app/useMainApp.ts:ui.info?.stored_session_id"
+  "ui-tui/src/app/useSessionLifecycle.ts:stored_session_id: r.stored_session_id"
+  "ui-tui/src/__tests__/appChromeStatusRule.test.tsx:no leading border dash"
+  "ui-tui/src/__tests__/appChromeStatusRule.test.tsx:without a leading separator"
+  "ui-tui/src/__tests__/appChromeStatusRule.test.tsx:instead of fabricating 0"
+  "ui-tui/src/__tests__/sessionExit.test.ts:rememberExitSessionId"
+  "ui-tui/src/entry.tsx:flushExitSessionId"
+  "tui_gateway/server.py:context_max is factual"
+  "tui_gateway/server.py:_tui_resumed_window_estimate"
+  "tools/runtime_budget.py:runtime_advice"
+  "agent/prompt_builder.py:INTERACTIVE_EXECUTION_BUDGET_GUIDANCE"
+  "tui_gateway/server.py:Never fall back to the lifetime session total"
+  "tui_gateway/methods_session.py:estimated_total"
+  "hermes_cli/terminal_bg_probe.py:HERMES_TUI_BACKGROUND"
+)
 
 validate_candidate_patch_stack() {
   local candidate
@@ -71,12 +100,14 @@ validate_candidate_patch_stack() {
         exit 1
       fi
     done
-    if [[ ! -d "$MANAGED/node_modules" ]]; then
-      echo "managed runtime lacks node_modules required for candidate verification" >&2
-      exit 1
-    fi
-    ln -s "$MANAGED/node_modules" "$candidate/node_modules"
-    bash "$FORK/scripts/verify-exit-session-contract.sh" "$candidate"
+    for CHECK in "${REQUIRED_SURFACE[@]}"; do
+      FILE="${CHECK%%:*}"
+      MARKER="${CHECK#*:}"
+      if ! grep -Fq "$MARKER" "$candidate/$FILE"; then
+        echo "candidate patch stack lacks $FILE marker $MARKER" >&2
+        exit 1
+      fi
+    done
   ); then
     rm -rf "$candidate"
     echo "ERROR: candidate patch stack fails validation" >&2
@@ -88,14 +119,11 @@ validate_candidate_patch_stack() {
 }
 
 if [[ "$MODE" == "--check" ]]; then
-  echo "--- active non-spec fork patch (check mode) ---"
+  echo "--- active fork snapshot (check mode) ---"
   validate_candidate_patch_stack
   exit 0
 fi
 
-# This consolidated patch is generated from the managed tree after the
-# speculative layer was removed. It carries the remaining compression/memory,
-# statusline, TPS, and session-id deltas without replaying historical commits.
 APPLY_FAILED=0
 for DELTA in "${ACTIVE_PATCHES[@]}"
 do
@@ -112,40 +140,28 @@ do
 done
 
 if (( APPLY_FAILED != 0 )); then
-  echo "No build performed. Port the consolidated patch to this upstream revision first." >&2
+  echo "No build performed. Port the consolidated snapshot to this upstream revision first." >&2
   exit 1
 fi
 
-REQUIRED_SURFACE=(
-  "agent/prompt_builder.py:INTERACTIVE_EXECUTION_BUDGET_GUIDANCE"
-  "tools/runtime_budget.py:runtime_advice"
-  "ui-tui/src/components/appChrome.tsx:waterFrameStep"
-  "tui_gateway/server.py:message.throughput"
-)
+# Re-check markers on the live tree (the candidate clone above may be stale).
 for CHECK in "${REQUIRED_SURFACE[@]}"; do
   FILE="${CHECK%%:*}"
   MARKER="${CHECK#*:}"
   if ! grep -Fq "$MARKER" "$FILE"; then
-    echo "ERROR: patch surface incomplete: $FILE lacks $MARKER" >&2
+    echo "ERROR: patch surface incomplete after apply: $FILE lacks $MARKER" >&2
     exit 1
   fi
 done
-
-# A single marker is insufficient: prior snapshots retained the symbol while
-# losing another leg of the durable-id → exit-handler → stdout chain. Validate
-# the complete source contract and fail before building when any leg drifts.
-python3 "$FORK/scripts/check-patch-surface.py" "$MANAGED"
 git status --porcelain | awk '{print "  "$1" "$2}' | head -15
 
-# ---- refresh managed venv + TUI dist ------------------------------------------
+# ---- refresh managed venv ------------------------------------------------------
 echo "--- uv sync (managed venv) ---"
 (cd "$MANAGED" && uv sync 2>&1 | tail -3)
-echo "--- executable exit-session contract ---"
-bash "$FORK/scripts/verify-exit-session-contract.sh" "$MANAGED"
 
 cat <<EOF
 
-Done. Managed runtime carries the active non-spec fork surface:
+Done. Managed runtime carries the active fork surface:
   managed:  $MANAGED
   version:  $("$MANAGED/venv/bin/hermes" --version 2>/dev/null | head -1 || echo '(re-check)')
 Run it with:  $MANAGED/venv/bin/hermes

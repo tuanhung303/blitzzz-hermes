@@ -1,0 +1,22 @@
+{
+ "rollout-2026-08-13T07-58-35-019ff8a0-cb9a-7163-8223-6789cae3ddc1.jsonl": {
+  "model": "deepseek-v4-pro",
+  "usage": {
+   "input_tokens": 4434820,
+   "cached_input_tokens": 4412032,
+   "cache_write_input_tokens": 0,
+   "output_tokens": 68218,
+   "reasoning_output_tokens": 49649,
+   "total_tokens": 4503038
+  },
+  "price": {
+   "input": 4434820,
+   "cached": 4412032,
+   "cache_write": 0,
+   "output": 117867,
+   "reasoning": 49649,
+   "cost_usd": 0.12845068599999998,
+   "cost_breakdown": "in_miss 0.0099 + cache_hit 0.0160 + out 0.1025"
+  }
+ }
+}

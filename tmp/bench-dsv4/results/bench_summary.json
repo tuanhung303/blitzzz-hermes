@@ -1,0 +1,56 @@
+{
+  "date": "2026-08-13",
+  "task": "Super-hard: CDCL SAT solver from scratch + coloring CNF encoder (9 instances, 3 hidden)",
+  "harness": "2 isolated Codex CLI panes (cds wrapper -> stock codex -p deepseek)",
+  "agents": {
+    "fl": {
+      "config": "deepseek-v4-flash @ model_reasoning_effort=ultra (max effort)",
+      "topic": "bench-dsv4-fl", "pane": "w32:p2",
+      "wall_min": 64.5, "done_marker_time": "1h04m30s",
+      "score": {"partA_visible": 60, "partA_hidden": 10, "partB": 20, "notes": 10, "total": 100},
+      "manifest_clean": true, "anti_cheat_clean": true,
+      "tokens": {"input": 21252681, "cached": 21068416, "output": 192259, "reasoning": 144342},
+      "cost_usd": 0.1790,
+      "solve_times_s": {"php7": 0.04, "php8": 0.03, "php9": 0.04, "rand150": 0.1,
+                        "rand200": 0.1, "rand220": 9.0, "rand250": 7.6,
+                        "coloring12": 0.0, "coloring14": 0.0},
+      "solver_lines": 484, "extra": ["fuzz.py"]
+    },
+    "pr": {
+      "config": "deepseek-v4-pro @ model_reasoning_effort=medium (standard)",
+      "topic": "bench-dsv4-pr", "pane": "w32:p3",
+      "wall_min": 35.5, "done_marker_time": "35m30s",
+      "score": {"partA_visible": 60, "partA_hidden": 10, "partB": 20, "notes": 10, "total": 100},
+      "manifest_clean": true, "anti_cheat_clean": true,
+      "tokens": {"input": 9244162, "cached": 9206400, "output": 117084, "reasoning": 90817},
+      "cost_usd": 0.2307,
+      "solve_times_s": {"php7": 0.3, "php8": 2.0, "php9": 29.0, "rand150": 0.2,
+                        "rand200": 1.3, "rand220": 5.5, "rand250": 3.1,
+                        "coloring12": 0.0, "coloring14": 0.0},
+      "solver_lines": 402
+    },
+    "pl": {
+      "config": "deepseek-v4-pro @ model_reasoning_effort=low",
+      "topic": "bench-dsv4-pl", "pane": "w32:p5",
+      "status": "FAIL — aborted by user at ~33 min, incomplete",
+      "wall_min": 33.0,
+      "score": {"partA_visible": 60, "partA_hidden": 8.3, "partB": 0, "notes": 0, "total": 68.3},
+      "manifest_clean": false,
+      "manifest_note": "accidental __pycache__ .pyc written inside task/grader by running the grader (Python side-effect, not tampering)",
+      "anti_cheat_clean": true,
+      "tokens": {"input": 4434820, "cached": 4412032, "output": 68218, "reasoning": 49649},
+      "cost_usd": 0.1285,
+      "solve_times_s": {"php7": 0.1, "php8": 0.8, "php9": 4.6, "rand150": 0.1,
+                        "rand200": 1.8, "rand220": 106.7, "rand250": 6.7,
+                        "coloring12": 0.0, "coloring14": 0.0},
+      "solver_lines": 381
+    }
+  },
+  "verdict": {
+    "fastest_task_completion": "pr (pro @ medium): 35.5 min vs 64.5 min vs pl aborted at 33 min",
+    "cheapest": "fl (flash @ max): $0.179 vs $0.231 vs $0.129 partial",
+    "quality": "fl = pr 100/100; pl 68.3 incomplete (rand220 106.7s over budget, no Part B/notes)",
+    "pl_status": "FAIL — slowest solver (rand220 12-19x slower), aborted by user, not recommended",
+    "recommendation": "daily driver pro@medium; deep-diagnosis flash@max; drop pro@low"
+  }
+}

@@ -1,0 +1,2 @@
+WATCH-ROUND=complete topic=bench-dsv4-ge round=1 agents=ge
+WATCH-END=all-done topic=bench-dsv4-ge rounds=1 agents=ge

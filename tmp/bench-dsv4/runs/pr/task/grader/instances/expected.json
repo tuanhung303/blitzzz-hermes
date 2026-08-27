@@ -1,0 +1,47 @@
+{
+ "php7": {
+  "verdict": "UNSAT",
+  "vars": 42,
+  "clauses": 133
+ },
+ "php8": {
+  "verdict": "UNSAT",
+  "vars": 56,
+  "clauses": 204
+ },
+ "php9": {
+  "verdict": "UNSAT",
+  "vars": 72,
+  "clauses": 297
+ },
+ "rand150": {
+  "verdict": "SAT",
+  "vars": 150,
+  "clauses": 640
+ },
+ "rand200": {
+  "verdict": "SAT",
+  "vars": 200,
+  "clauses": 850
+ },
+ "rand250": {
+  "verdict": "SAT",
+  "vars": 250,
+  "clauses": 1050
+ },
+ "rand220": {
+  "verdict": "SAT",
+  "vars": 220,
+  "clauses": 950
+ },
+ "coloring12": {
+  "verdict": "SAT",
+  "vars": 36,
+  "clauses": 123
+ },
+ "coloring14": {
+  "verdict": "SAT",
+  "vars": 42,
+  "clauses": 170
+ }
+}

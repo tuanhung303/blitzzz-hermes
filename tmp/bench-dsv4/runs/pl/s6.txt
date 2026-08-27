@@ -1,0 +1,2 @@
+cfg(seed=7,rf=0.05,rp=0.5,vd=0.95,rb=100) rand250: sat=True t=100.44s conf=290311
+cfg(seed=7,rf=0.05,rp=0.5,vd=0.95,rb=100) rand220: sat=True t=296.52s conf=1435902

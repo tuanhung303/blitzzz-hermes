@@ -1,0 +1,18 @@
+{
+  "name": "ge_med_opt_loop_1",
+  "effort": "medium",
+  "model": "Gemini 3.7 Flash (Medium)",
+  "t0": 1787464020.942985,
+  "t1": 1787464335.491162,
+  "wall_s": 314.55,
+  "rc": 0,
+  "score": 100.0,
+  "scores": {
+    "partA_visible": 60.0,
+    "partA_hidden": 10.0,
+    "partB": 20,
+    "notes_cap": 10
+  },
+  "anti_cheat_flags": 0,
+  "manifest_ok": true
+}

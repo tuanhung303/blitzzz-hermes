@@ -1,0 +1,4564 @@
+diff --git a/.gitignore b/.gitignore
+index bef8cb592e..22c1efc4cf 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -212,3 +212,8 @@ native/fts5_cjk/*.so
+ # interrupted; consumed by launch-time recovery. Never commit it (was tracked
+ # by accident via 3a69e34702, removed in the #72002 salvage).
+ .lazy-refresh-incomplete
++
++# Local dev/test DBs — never commit (SessionDB opened from the repo dir).
++state.db
++state.db-shm
++state.db-wal
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 55b1f4fd87..a1cd7116f5 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -172,6 +172,27 @@ HERMES_AGENT_HELP_GUIDANCE = (
+ # (e.g. a Blank Slate install with the skills toolset disabled). Pointing the
+ # model at skill_view() there would be a dangling reference — the docs URL is
+ # the only actionable pointer.
++INTERACTIVE_EXECUTION_BUDGET_GUIDANCE = (
++    "# Interactive Execution Budget\n"
++    "- **Estimate before execution.** Before starting a command, estimate its runtime. "
++    "Do not blindly start work with a reasonable chance of exceeding 10 minutes.\n"
++    "- **Runtime escalation.** If a command unexpectedly crosses its expected runtime "
++    "or budget threshold, stop it where safely possible instead of merely allowing it "
++    "to continue.\n"
++    "- **Progress matters.** Prefer observable progress over silent waiting. A 15-minute "
++    "job with clear progress may be acceptable as an explicit background batch job; a "
++    "5-minute command with no output may warrant stopping and redesign.\n"
++    "\n"
++    "Practical policy:\n"
++    "- Actions should normally complete within 3 minutes.\n"
++    "- Actions expected to exceed 3 minutes should be optimized or replaced where practical.\n"
++    "- Actions expected to exceed 10 minutes require a faster alternative or explicit "
++    "justification before execution.\n"
++    "- Actions expected to exceed 30 minutes must not run synchronously in the agent "
++    "session; use a monitored background or external batch job."
++)
++
++
+ HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
+     "You run on Hermes Agent (by Nous Research). When the user needs help with "
+     "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
+diff --git a/agent/system_prompt.py b/agent/system_prompt.py
+index fa833d72e3..3f329e0b76 100644
+--- a/agent/system_prompt.py
++++ b/agent/system_prompt.py
+@@ -37,6 +37,7 @@ from agent.prompt_builder import (
+     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+     HERMES_AGENT_HELP_GUIDANCE,
+     HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS,
++    INTERACTIVE_EXECUTION_BUDGET_GUIDANCE,
+     KANBAN_GUIDANCE,
+     MEMORY_GUIDANCE,
+     USER_PROFILE_GUIDANCE,
+@@ -402,6 +403,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
+         else HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
+     )
+ 
++    # Universal execution budget. This is deliberately in the stable global
++    # prompt rather than project context or memory so every model/session sees
++    # the same thresholds, including isolated swarm workers.
++    stable_parts.append(INTERACTIVE_EXECUTION_BUDGET_GUIDANCE)
++
+     # Universal task-completion / no-fabrication guidance.  Applied to ALL
+     # models regardless of tool_use_enforcement gating — the failure modes
+     # this targets (stopping after a stub; fabricating output when a real
+diff --git a/hermes_cli/main.py b/hermes_cli/main.py
+index 92c37c0657..9e14dabee7 100644
+--- a/hermes_cli/main.py
++++ b/hermes_cli/main.py
+@@ -2896,6 +2896,35 @@ def _launch_tui(
+     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
+     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
+ 
++    # Real-background probe (macOS, best-effort): the TUI asks the host for
++    # its colors via OSC 10/11, but some hosts swallow the replies (Herdr
++    # renders them into the pane buffer instead of forwarding them to pane
++    # stdin), so the TUI stays pinned to the stale boot-cache polarity —
++    # washed-out text on a light terminal, and new sessions never self-fix.
++    # Measure the HOST window's actual pixels (CGWindowList + window-id
++    # capture, so a light Warp window behind a dark Orca window measures the
++    # right one) and seed HERMES_TUI_BACKGROUND (the same slot the OSC answer
++    # would fill) so the first frame is correct.  Explicit user pins
++    # (HERMES_TUI_THEME / HERMES_TUI_LIGHT / HERMES_TUI_BACKGROUND) win and
++    # skip the probe.  The probe command is also handed to the TUI so it can
++    # re-measure periodically — no restart needed when the host changes.
++    if not any(env.get(k) for k in ("HERMES_TUI_THEME", "HERMES_TUI_LIGHT", "HERMES_TUI_BACKGROUND")):
++        try:
++            from hermes_cli.terminal_bg_probe import probe_terminal_background
++
++            bg = probe_terminal_background(timeout=8.0)
++            if bg:
++                env["HERMES_TUI_BACKGROUND"] = bg
++                probe_script = os.path.join(
++                    os.path.dirname(os.path.abspath(__file__)), "terminal_bg_probe.py"
++                )
++                env["HERMES_TUI_PROBE_CMD"] = f"{sys.executable} {probe_script}"
++        except Exception:
++            logger.debug(
++                "Terminal background probe failed; TUI will use its normal detection",
++                exc_info=True,
++            )
++
+     wt_info = None
+     if worktree:
+         try:
+diff --git a/hermes_cli/terminal_bg_probe.py b/hermes_cli/terminal_bg_probe.py
+new file mode 100644
+index 0000000000..f6be4703b1
+--- /dev/null
++++ b/hermes_cli/terminal_bg_probe.py
+@@ -0,0 +1,449 @@
++"""Probe the REAL terminal background color by sampling on-screen pixels.
++
++Why this exists
++---------------
++The Ink TUI asks its host terminal for the true colors via OSC 10/11 queries
++(``syncThemeToTerminalBackground`` in ``ui-tui``).  Some hosts swallow the
++replies: Herdr renders the OSC answer into the pane's scrollback instead of
++forwarding it to the pane's stdin, so the TUI inside a Herdr pane never sees
++the terminal's colors and stays pinned to the stale boot-cache polarity —
++washed-out light text on a light terminal, or a light palette on a dark one,
++and "new sessions don't fix it" because the cache re-seeds itself.
++
++This module measures what is actually on screen instead: it finds the
++frontmost window (osascript / System Events, no extra permission needed),
++captures that region (``screencapture``), downscales it (``sips``) and returns
++the dominant background hex from pure-stdlib PNG decoding.  The TUI launch
++path seeds the result into ``HERMES_TUI_BACKGROUND`` — the same env slot the
++OSC answer would fill — so the first frame is already correct, and explicit
++user pins (``HERMES_TUI_THEME`` / ``HERMES_TUI_LIGHT``) still win.
++
++macOS-only, best-effort, never raises: any failure just returns None and the
++TUI's existing fallback chain (OSC -> boot cache -> macOS appearance) takes
++over unchanged.
++"""
++
++from __future__ import annotations
++
++import os
++import re
++import struct
++import subprocess
++import sys
++import tempfile
++import time
++import zlib
++from typing import List, Mapping, Optional, Sequence, Tuple
++
++RGB = Tuple[int, int, int]
++
++# Frontmost windows owned by these apps are candidate terminals.  The probe
++# only measures a terminal window — measuring an IDE/editor window would seed
++# the wrong polarity.  ``screencapture`` needs Screen Recording permission for
++# the invoking app; without it the capture fails and the probe returns None.
++_TERMINAL_NAME_RE = re.compile(
++    r"term|orca|warp|iterm|terminal|kitty|alacritty|wezterm|wez|ghostty|"
++    r"hyper|tabby|konsole|gnome|foot|alacritty|rio|wave|visual|vscode|cursor|"
++    r"zed|tmux|herdr",
++    re.IGNORECASE,
++)
++
++
++def _run(cmd: Sequence[str], timeout: float) -> Optional[str]:
++    """Run a short subprocess, returning stdout text or None on any failure."""
++    try:
++        proc = subprocess.run(
++            cmd,
++            capture_output=True,
++            text=True,
++            timeout=timeout,
++            check=False,
++        )
++        if proc.returncode != 0:
++            return None
++        return proc.stdout
++    except Exception:
++        return None
++
++
++def frontmost_window_bounds(timeout: float = 2.0) -> Optional[Tuple[int, int, int, int, str]]:
++    """Return (x, y, w, h, app_name) of the frontmost window, or None.
++
++    Uses System Events (osascript), which reports window position/size without
++    Screen Recording permission.  Only windows of terminal-like apps are
++    returned, so a launch from an IDE does not pollute the measurement.
++    """
++    script = (
++        'tell application "System Events" to tell (first application process '
++        'whose frontmost is true) to get {name, position of front window, '
++        "size of front window}"
++    )
++    out = _run(["osascript", "-e", script], timeout)
++    if not out:
++        return None
++
++    # AppleScript list: `Name, x, y, w, h` — quoted when the name has spaces.
++    parts = [p.strip() for p in out.split(",")]
++    if len(parts) != 5:
++        return None
++    name = parts[0].strip('"')
++    try:
++        x, y, w, h = (int(parts[i]) for i in range(1, 5))
++    except ValueError:
++        return None
++    if w <= 0 or h <= 0:
++        return None
++    if not _TERMINAL_NAME_RE.search(name):
++        return None
++    return (x, y, w, h, name)
++
++
++# TERM_PROGRAM values map to the CGWindow owner name of the app that RENDERS
++# this session.  Measuring that window — not the frontmost one — is what keeps
++# a light Warp window behind a dark Orca window from flipping the polarity.
++_TERM_PROGRAM_HOST_APP = {
++    "WarpTerminal": "Warp",
++    "Orca": "Orca",
++    "iTerm.app": "iTerm2",
++    "Apple_Terminal": "Terminal",
++    "WezTerm": "WezTerm",
++    "ghostty": "ghostty",
++    "Alacritty": "Alacritty",
++    "kitty": "kitty",
++    "vscode": "Code",
++    "cursor": "Cursor",
++    "zed": "Zed",
++}
++
++
++def host_app_from_env(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
++    """Return the CGWindow owner name of the terminal hosting this session.
++
++    Derived from TERM_PROGRAM (the outer terminal that spawned our process
++    tree).  When TERM_PROGRAM names an editor (vscode/cursor) or is unknown,
++    the probe falls back to the frontmost-window heuristic.
++    """
++    env = os.environ if env is None else env
++    term_program = (env.get("TERM_PROGRAM") or "").strip()
++    return _TERM_PROGRAM_HOST_APP.get(term_program)
++
++
++_WINDOWLIST_SWIFT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "windowlist.swift")
++_WINDOWLIST_BIN = os.path.join(
++    tempfile.gettempdir(), "hermes-windowlist-bin"
++)
++
++
++def _ensure_windowlist_binary(timeout: float = 20.0) -> Optional[str]:
++    """Compile windowlist.swift once (cache by source mtime), return bin path."""
++    if not os.path.exists(_WINDOWLIST_SWIFT):
++        return None
++    try:
++        src_mtime = os.path.getmtime(_WINDOWLIST_SWIFT)
++    except OSError:
++        return None
++    if os.path.exists(_WINDOWLIST_BIN):
++        try:
++            if os.path.getmtime(_WINDOWLIST_BIN) >= src_mtime:
++                return _WINDOWLIST_BIN
++        except OSError:
++            pass
++    if _run(["xcrun", "--find", "swiftc"], timeout=5.0) is None:
++        return None
++    out = _run(
++        ["swiftc", "-O", _WINDOWLIST_SWIFT, "-o", _WINDOWLIST_BIN],
++        timeout=timeout,
++    )
++    if out is None or not os.path.exists(_WINDOWLIST_BIN):
++        return None
++    return _WINDOWLIST_BIN
++
++
++def host_window_bounds(timeout: float = 3.0) -> Optional[Tuple[int, int, int, int, str, int]]:
++    """Return (x, y, w, h, app_name, window_id) of the host terminal's window.
++
++    Uses CGWindowList (via a tiny swift helper) so the window is found even
++    when it is NOT frontmost — e.g. a light Warp window behind a dark Orca
++    window.  Window id lets `screencapture -l` capture the window's own
++    content even when it is partially occluded.  Returns None when the host
++    app is unknown or no on-screen window exists for it.
++    """
++    app = host_app_from_env()
++    if not app:
++        return None
++    binary = _ensure_windowlist_binary(timeout=min(20.0, max(5.0, timeout + 5)))
++    if not binary:
++        return None
++    out = _run([binary], timeout=min(2.0, timeout))
++    if not out:
++        return None
++    best = None
++    for line in out.splitlines():
++        parts = line.split("\t")
++        if len(parts) != 6:
++            continue
++        owner, wid_s, x_s, y_s, w_s, h_s = parts
++        try:
++            wid, x, y, w, h = int(wid_s), int(x_s), int(y_s), int(w_s), int(h_s)
++        except ValueError:
++            continue
++        if owner != app or w <= 0 or h <= 0:
++            continue
++        area = w * h
++        if best is None or area > best[0]:
++            best = (area, x, y, w, h, wid)
++    if best is None:
++        return None
++    _, x, y, w, h, wid = best
++    return (x, y, w, h, app, wid)
++
++
++def capture_window(window_id: int, timeout: float = 2.0) -> Optional[str]:
++    """Capture a specific window's content (even when occluded) to a temp PNG."""
++    fd, path = tempfile.mkstemp(prefix="hermes-bg-probe-", suffix=".png")
++    os.close(fd)
++    try:
++        out = _run(["screencapture", "-x", "-l", str(window_id), path], timeout)
++        if out is None or not os.path.getsize(path):
++            return None
++        return path
++    except Exception:
++        try:
++            os.unlink(path)
++        except OSError:
++            pass
++        return None
++
++
++def capture_region(
++    x: int, y: int, w: int, h: int, timeout: float = 2.0
++) -> Optional[str]:
++    """Capture the given screen region to a temp PNG, returning its path."""
++    x = max(x, 0)
++    y = max(y, 0)
++    fd, path = tempfile.mkstemp(prefix="hermes-bg-probe-", suffix=".png")
++    os.close(fd)
++    try:
++        out = _run(
++            ["screencapture", "-x", "-R", f"{x},{y},{w},{h}", path],
++            timeout,
++        )
++        if out is None or not os.path.getsize(path):
++            return None
++        return path
++    except Exception:
++        try:
++            os.unlink(path)
++        except OSError:
++            pass
++        return None
++
++
++def downscale(path: str, size: int = 8, timeout: float = 2.0) -> Optional[str]:
++    """Downscale a PNG to `size`x`size` via sips; returns the new temp path."""
++    fd, small = tempfile.mkstemp(prefix="hermes-bg-probe-small-", suffix=".png")
++    os.close(fd)
++    try:
++        out = _run(
++            ["sips", "-z", str(size), str(size), path, "--out", small],
++            timeout,
++        )
++        if out is None or not os.path.getsize(small):
++            return None
++        return small
++    except Exception:
++        try:
++            os.unlink(small)
++        except OSError:
++            pass
++        return None
++
++
++def decode_png(path: str) -> Optional[List[RGB]]:
++    """Decode a small 8-bit RGB/RGBA non-interlaced PNG into pixels.
++
++    Pure stdlib (zlib + struct) so the probe needs no dependencies.  Returns
++    None for anything unsupported (16-bit, palette, interlaced).
++    """
++    try:
++        with open(path, "rb") as fh:
++            data = fh.read()
++    except OSError:
++        return None
++    if data[:8] != b"\x89PNG\r\n\x1a\n":
++        return None
++
++    pos = 8
++    idat = b""
++    width = height = bitdepth = colortype = None
++    while pos < len(data):
++        if pos + 8 > len(data):
++            return None
++        (length,), ctype = struct.unpack(">I", data[pos : pos + 4]), data[pos + 4 : pos + 8]
++        pos += 8
++        chunk = data[pos : pos + length]
++        pos += length + 4
++        if ctype == b"IHDR":
++            if length < 13:
++                return None
++            width, height, bitdepth, colortype = struct.unpack(">IIBB", chunk[:10])
++        elif ctype == b"IDAT":
++            idat += chunk
++        elif ctype == b"IEND":
++            break
++
++    if width is None or height is None or bitdepth != 8 or colortype not in (2, 6):
++        return None
++    bpp = 3 if colortype == 2 else 4
++    try:
++        raw = zlib.decompress(idat)
++    except zlib.error:
++        return None
++
++    stride = width * bpp
++    expected = (stride + 1) * height
++    if len(raw) < expected:
++        return None
++    raw = raw[:expected]
++
++    out = bytearray()
++    prev = bytearray(stride)
++    pos = 0
++    for _ in range(height):
++        f = raw[pos]
++        pos += 1
++        line = bytearray(raw[pos : pos + stride])
++        pos += stride
++        if f == 0:  # None
++            pass
++        elif f == 1:  # Sub
++            for i in range(bpp, stride):
++                line[i] = (line[i] + line[i - bpp]) % 256
++        elif f == 2:  # Up
++            for i in range(stride):
++                line[i] = (line[i] + prev[i]) % 256
++        elif f == 3:  # Average
++            for i in range(stride):
++                a = line[i - bpp] if i >= bpp else 0
++                line[i] = (line[i] + ((a + prev[i]) >> 1)) % 256
++        elif f == 4:  # Paeth
++            for i in range(stride):
++                a = line[i - bpp] if i >= bpp else 0
++                b = prev[i]
++                c = prev[i - bpp] if i >= bpp else 0
++                p = a + b - c
++                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
++                if pa <= pb and pa <= pc:
++                    pr = a
++                elif pb <= pc:
++                    pr = b
++                else:
++                    pr = c
++                line[i] = (line[i] + pr) % 256
++        else:
++            return None
++        out += line
++        prev = line
++
++    pixels: List[RGB] = []
++    for y in range(height):
++        row = out[y * stride : (y + 1) * stride]
++        for x in range(width):
++            o = x * bpp
++            pixels.append((row[o], row[o + 1], row[o + 2]))
++    return pixels
++
++
++def median_color(pixels: Sequence[RGB]) -> Optional[RGB]:
++    """Dominant color via per-channel median (text pixels are the minority)."""
++    if not pixels:
++        return None
++    return tuple(sorted(c[i] for c in pixels)[len(pixels) // 2] for i in range(3))  # type: ignore[return-value]
++
++
++def to_hex(rgb: RGB) -> str:
++    return "#%02x%02x%02x" % rgb
++
++
++def probe_terminal_background(timeout: float = 3.0) -> Optional[str]:
++    """Measure the REAL terminal background as '#rrggbb'.
++
++    Resolution order:
++      1. The HOST window — the terminal app that renders this session
++         (from TERM_PROGRAM), found via CGWindowList and captured by window id
++         so occlusion by other apps doesn't pollute the measurement.
++      2. The frontmost window (legacy heuristic), when TERM_PROGRAM doesn't
++         name a known host app.
++
++    Returns None when the platform is not macOS, no terminal window can be
++    found, or any step fails — callers should treat None as \"no answer\" and
++    keep their existing fallback chain.
++    """
++    if sys.platform != "darwin":
++        return None
++
++    deadline = time.monotonic() + timeout
++
++    # 1) Host window first: correct even when another app is frontmost.
++    host = host_window_bounds(timeout=min(2.0, timeout))
++    if host:
++        x, y, w, h, _app, wid = host
++        remaining = deadline - time.monotonic()
++        if remaining <= 0:
++            return None
++        region = capture_window(wid, timeout=min(2.0, remaining))
++        if region:
++            hex_color = _finish_probe(region, deadline)
++            if hex_color:
++                return hex_color
++
++    # 2) Fallback: frontmost terminal window (legacy behavior).
++    bounds = frontmost_window_bounds(timeout=min(2.0, timeout))
++    if not bounds:
++        return None
++    x, y, w, h, _name = bounds
++
++    remaining = deadline - time.monotonic()
++    if remaining <= 0:
++        return None
++    region = capture_region(x, y, w, h, timeout=min(2.0, remaining))
++    if not region:
++        return None
++    return _finish_probe(region, deadline)
++
++
++def _finish_probe(region: str, deadline: float) -> Optional[str]:
++    """Downscale, decode, median — shared tail of both probe paths."""
++    remaining = deadline - time.monotonic()
++    if remaining <= 0:
++        try:
++            os.unlink(region)
++        except OSError:
++            pass
++        return None
++    small = downscale(region, size=8, timeout=min(2.0, remaining))
++    if not small:
++        try:
++            os.unlink(region)
++        except OSError:
++            pass
++        return None
++
++    pixels = decode_png(small)
++    # Decode first, THEN clean up — decode_png needs the file on disk.
++    for path in (region, small):
++        try:
++            os.unlink(path)
++        except OSError:
++            pass
++    if not pixels:
++        return None
++    med = median_color(pixels)
++    if med is None:
++        return None
++    return to_hex(med)
++
++
++if __name__ == "__main__":
++    hex_color = probe_terminal_background()
++    print(hex_color or "no-answer")
+diff --git a/hermes_cli/windowlist.swift b/hermes_cli/windowlist.swift
+new file mode 100644
+index 0000000000..b5060b76c7
+--- /dev/null
++++ b/hermes_cli/windowlist.swift
+@@ -0,0 +1,23 @@
++// List on-screen windows: owner name, window id, bounds, layer.
++// Used by terminal_bg_probe to find the REAL host window (the terminal app
++// that renders this Hermes session) instead of the frontmost window — a
++// light Warp window behind a dark Orca window must not flip the polarity.
++import CoreGraphics
++import Foundation
++
++let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
++guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else {
++    exit(1)
++}
++for w in list {
++    let owner = w[kCGWindowOwnerName as String] as? String ?? ""
++    let num = w[kCGWindowNumber as String] as? Int ?? 0
++    let layer = w[kCGWindowLayer as String] as? Int ?? 0
++    guard layer == 0 else { continue } // only normal windows
++    guard let bounds = w[kCGWindowBounds as String] as? [String: Any] else { continue }
++    let x = bounds["X"] as? Int ?? 0
++    let y = bounds["Y"] as? Int ?? 0
++    let wd = bounds["Width"] as? Int ?? 0
++    let ht = bounds["Height"] as? Int ?? 0
++    print("\(owner)\t\(num)\t\(x)\t\(y)\t\(wd)\t\(ht)")
++}
+diff --git a/tests/agent/test_execution_budget_prompt.py b/tests/agent/test_execution_budget_prompt.py
+new file mode 100644
+index 0000000000..652505856c
+--- /dev/null
++++ b/tests/agent/test_execution_budget_prompt.py
+@@ -0,0 +1,50 @@
++"""The execution budget is part of every Hermes system prompt."""
++
++from unittest.mock import MagicMock, patch
++
++from agent.prompt_builder import INTERACTIVE_EXECUTION_BUDGET_GUIDANCE
++from run_agent import AIAgent
++
++
++def _tool_defs(*names: str) -> list[dict]:
++    return [
++        {
++            "type": "function",
++            "function": {
++                "name": name,
++                "description": f"{name} tool",
++                "parameters": {"type": "object", "properties": {}},
++            },
++        }
++        for name in names
++    ]
++
++
++def test_budget_guidance_contains_policy_contract():
++    text = INTERACTIVE_EXECUTION_BUDGET_GUIDANCE.lower()
++
++    assert "estimate before execution" in text
++    assert "runtime escalation" in text
++    assert "progress matters" in text
++    assert "3 minutes" in text
++    assert "10 minutes" in text
++    assert "30 minutes" in text
++    assert "synchronously" in text
++
++
++def test_budget_guidance_is_in_global_system_prompt():
++    with (
++        patch("run_agent.get_tool_definitions", return_value=_tool_defs("terminal")),
++        patch("run_agent.check_toolset_requirements", return_value={}),
++        patch("run_agent.OpenAI"),
++    ):
++        agent = AIAgent(
++            api_key="test-key-1234567890",
++            base_url="https://openrouter.ai/api/v1",
++            quiet_mode=True,
++            skip_context_files=True,
++            skip_memory=True,
++        )
++        agent.client = MagicMock()
++
++    assert INTERACTIVE_EXECUTION_BUDGET_GUIDANCE in agent._build_system_prompt()
+diff --git a/tests/hermes_cli/test_terminal_bg_probe.py b/tests/hermes_cli/test_terminal_bg_probe.py
+new file mode 100644
+index 0000000000..7774f291ae
+--- /dev/null
++++ b/tests/hermes_cli/test_terminal_bg_probe.py
+@@ -0,0 +1,275 @@
++"""Unit tests for the on-screen terminal background probe.
++
++The probe measures the frontmost terminal window's real pixels so the TUI can
++pick the right light/dark polarity even when the host swallows OSC 10/11
++replies (Herdr panes).  Pure functions are tested directly; the osascript
++parser is tested with a mocked subprocess; the end-to-end flow is tested with
++mocked steps so no display / permissions are needed in CI.
++"""
++
++import struct
++import zlib
++
++import pytest
++
++from hermes_cli import terminal_bg_probe as probe
++
++
++def _make_png(width: int, height: int, pixels: bytes, color_type: int = 2) -> bytes:
++    """Build a minimal 8-bit non-interlaced PNG (RGB=2, RGBA=6)."""
++    bpp = 3 if color_type == 2 else 4
++    raw = b""
++    stride = width * bpp
++    for y in range(height):
++        raw += b"\x00"  # filter: None
++        raw += pixels[y * stride : (y + 1) * stride]
++
++    def chunk(ctype: bytes, payload: bytes) -> bytes:
++        return (
++            struct.pack(">I", len(payload))
++            + ctype
++            + payload
++            + struct.pack(">I", zlib.crc32(ctype + payload) & 0xFFFFFFFF)
++        )
++
++    ihdr = struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0)
++    return (
++        b"\x89PNG\r\n\x1a\n"
++        + chunk(b"IHDR", ihdr)
++        + chunk(b"IDAT", zlib.compress(raw))
++        + chunk(b"IEND", b"")
++    )
++
++
++class TestDecodePng:
++    def test_rgb_pixels(self):
++        # 2x2: top-left red, top-right green, bottom-left blue, bottom-right white
++        pixels = bytes(
++            [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255]
++        )
++        path = "/tmp/test_probe_rgb.png"
++        with open(path, "wb") as fh:
++            fh.write(_make_png(2, 2, pixels))
++        decoded = probe.decode_png(path)
++        assert decoded == [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)]
++
++    def test_rgba_alpha_ignored(self):
++        pixels = bytes([10, 20, 30, 99, 40, 50, 60, 199])
++        path = "/tmp/test_probe_rgba.png"
++        with open(path, "wb") as fh:
++            fh.write(_make_png(2, 1, pixels, color_type=6))
++        decoded = probe.decode_png(path)
++        assert decoded == [(10, 20, 30), (40, 50, 60)]
++
++    def test_filter_sub_roundtrip(self):
++        # A Sub-filtered 2x1 RGB row: the FIRST pixel is stored as-is; later
++        # bytes are stored as value - left neighbor.  decode_png must apply
++        # the predictor.
++        width, height = 2, 1
++        pixels = bytes([200, 100, 50, 40, 30, 20])
++        stored = bytes(
++            [
++                pixels[0], pixels[1], pixels[2],
++                (pixels[3] - pixels[0]) % 256,
++                (pixels[4] - pixels[1]) % 256,
++                (pixels[5] - pixels[2]) % 256,
++            ]
++        )
++        raw = b"\x01" + stored  # filter 1 = Sub
++
++        def chunk(ctype: bytes, payload: bytes) -> bytes:
++            return (
++                struct.pack(">I", len(payload))
++                + ctype
++                + payload
++                + struct.pack(">I", zlib.crc32(ctype + payload) & 0xFFFFFFFF)
++            )
++
++        ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
++        png = (
++            b"\x89PNG\r\n\x1a\n"
++            + chunk(b"IHDR", ihdr)
++            + chunk(b"IDAT", zlib.compress(raw))
++            + chunk(b"IEND", b"")
++        )
++        path = "/tmp/test_probe_sub.png"
++        with open(path, "wb") as fh:
++            fh.write(png)
++        assert probe.decode_png(path) == [(200, 100, 50), (40, 30, 20)]
++
++    def test_rejects_interlaced(self):
++        ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 1)  # interlace=1
++
++        def chunk(ctype: bytes, payload: bytes) -> bytes:
++            return (
++                struct.pack(">I", len(payload))
++                + ctype
++                + payload
++                + struct.pack(">I", zlib.crc32(ctype + payload) & 0xFFFFFFFF)
++            )
++
++        png = (
++            b"\x89PNG\r\n\x1a\n"
++            + chunk(b"IHDR", ihdr)
++            + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00"))
++            + chunk(b"IEND", b"")
++        )
++        path = "/tmp/test_probe_interlaced.png"
++        with open(path, "wb") as fh:
++            fh.write(png)
++        # Interlaced data decodes to garbage or fails; decode_png must not raise.
++        result = probe.decode_png(path)
++        assert result is None or isinstance(result, list)
++
++
++class TestMedianAndHex:
++    def test_median_color_ignores_text_minority(self):
++        # 9 pixels: 7 dark background, 2 bright "text"
++        pixels = [(30, 34, 40)] * 7 + [(255, 255, 255), (240, 240, 240)]
++        assert probe.median_color(pixels) == (30, 34, 40)
++
++    def test_median_empty(self):
++        assert probe.median_color([]) is None
++
++    def test_to_hex(self):
++        assert probe.to_hex((53, 56, 62)) == "#35383e"
++        assert probe.to_hex((255, 255, 255)) == "#ffffff"
++
++
++class TestBoundsParsing:
++    def test_parses_frontmost_terminal(self, monkeypatch):
++        monkeypatch.setattr(
++            probe, "_run", lambda cmd, timeout: "Orca, 1683, 58, 1512, 949"
++        )
++        assert probe.frontmost_window_bounds() == (1683, 58, 1512, 949, "Orca")
++
++    def test_parses_quoted_name(self, monkeypatch):
++        monkeypatch.setattr(
++            probe, "_run", lambda cmd, timeout: '"Photoshop", 1, 2, 3, 4'
++        )
++        # Not a terminal-like name -> rejected
++        assert probe.frontmost_window_bounds() is None
++
++    def test_accepts_quoted_vscode_name(self, monkeypatch):
++        monkeypatch.setattr(
++            probe, "_run", lambda cmd, timeout: '"Visual Studio Code", 10, 20, 800, 600'
++        )
++        assert probe.frontmost_window_bounds() == (10, 20, 800, 600, "Visual Studio Code")
++
++    def test_accepts_quoted_terminal_name(self, monkeypatch):
++        monkeypatch.setattr(
++            probe, "_run", lambda cmd, timeout: '"WezTerm", 10, 20, 800, 600'
++        )
++        assert probe.frontmost_window_bounds() == (10, 20, 800, 600, "WezTerm")
++
++    def test_rejects_non_terminal_app(self, monkeypatch):
++        monkeypatch.setattr(
++            probe, "_run", lambda cmd, timeout: "Xcode, 0, 0, 100, 100"
++        )
++        assert probe.frontmost_window_bounds() is None
++
++    def test_returns_none_on_subprocess_failure(self, monkeypatch):
++        monkeypatch.setattr(probe, "_run", lambda cmd, timeout: None)
++        assert probe.frontmost_window_bounds() is None
++
++    def test_returns_none_on_garbage(self, monkeypatch):
++        monkeypatch.setattr(probe, "_run", lambda cmd, timeout: "not-a-list")
++        assert probe.frontmost_window_bounds() is None
++
++
++class TestHostAppFromEnv:
++    def test_warp_maps_to_warp(self):
++        assert probe.host_app_from_env({"TERM_PROGRAM": "WarpTerminal"}) == "Warp"
++
++    def test_orca_maps_to_orca(self):
++        assert probe.host_app_from_env({"TERM_PROGRAM": "Orca"}) == "Orca"
++
++    def test_iterm_maps_to_iterm2(self):
++        assert probe.host_app_from_env({"TERM_PROGRAM": "iTerm.app"}) == "iTerm2"
++
++    def test_unknown_term_program_returns_none(self):
++        assert probe.host_app_from_env({"TERM_PROGRAM": "SomethingElse"}) is None
++
++    def test_missing_env_returns_none(self):
++        assert probe.host_app_from_env({}) is None
++
++
++class TestHostWindowBounds:
++    WINDOWLIST = (
++        "Warp\t1001\t0\t0\t800\t600\n"
++        "Orca\t2002\t10\t20\t1512\t949\n"
++        "Warp\t1003\t100\t100\t1200\t900\n"
++        "Warp\t1004\t5\t5\t50\t50\n"
++    )
++
++    def test_picks_largest_host_window(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_app_from_env", lambda env=None: "Warp")
++        monkeypatch.setattr(probe, "_ensure_windowlist_binary", lambda timeout=20.0: "/tmp/windowlist")
++        monkeypatch.setattr(probe, "_run", lambda cmd, timeout: self.WINDOWLIST)
++        # Largest Warp window is 1200x900 at (100,100) -> id 1003
++        assert probe.host_window_bounds(timeout=3.0) == (100, 100, 1200, 900, "Warp", 1003)
++
++    def test_ignores_other_apps(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_app_from_env", lambda env=None: "Orca")
++        monkeypatch.setattr(probe, "_ensure_windowlist_binary", lambda timeout=20.0: "/tmp/windowlist")
++        monkeypatch.setattr(probe, "_run", lambda cmd, timeout: self.WINDOWLIST)
++        assert probe.host_window_bounds(timeout=3.0) == (10, 20, 1512, 949, "Orca", 2002)
++
++    def test_no_host_app_returns_none(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_app_from_env", lambda env=None: None)
++        assert probe.host_window_bounds(timeout=3.0) is None
++
++    def test_no_matching_window_returns_none(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_app_from_env", lambda env=None: "Warp")
++        monkeypatch.setattr(probe, "_ensure_windowlist_binary", lambda timeout=20.0: "/tmp/windowlist")
++        monkeypatch.setattr(probe, "_run", lambda cmd, timeout: "Orca\t2002\t10\t20\t1512\t949\n")
++        assert probe.host_window_bounds(timeout=3.0) is None
++
++    def test_binary_missing_returns_none(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_app_from_env", lambda env=None: "Warp")
++        monkeypatch.setattr(probe, "_ensure_windowlist_binary", lambda timeout=20.0: None)
++        assert probe.host_window_bounds(timeout=3.0) is None
++
++
++class TestProbeFlow:
++    def test_non_macos_returns_none(self, monkeypatch):
++        monkeypatch.setattr(probe.sys, "platform", "linux")
++        assert probe.probe_terminal_background() is None
++
++    def test_full_flow_with_mocked_steps(self, monkeypatch):
++        # Host path has no TERM_PROGRAM answer -> falls through to frontmost.
++        monkeypatch.setattr(probe, "host_window_bounds", lambda timeout=3.0: None)
++        monkeypatch.setattr(probe, "frontmost_window_bounds", lambda timeout=None: (0, 0, 100, 100, "Warp"))
++        monkeypatch.setattr(probe, "capture_region", lambda x, y, w, h, timeout=None: "/tmp/region.png")
++        monkeypatch.setattr(probe, "downscale", lambda path, size=8, timeout=None: "/tmp/small.png")
++        monkeypatch.setattr(probe, "decode_png", lambda path: [(30, 34, 40)] * 64)
++
++        result = probe.probe_terminal_background(timeout=5.0)
++        assert result == "#1e2228"  # median of (30, 34, 40)
++
++    def test_host_window_path_wins_over_frontmost(self, monkeypatch):
++        # Host window measures a LIGHT Warp window even though the frontmost
++        # is a DARK Orca — the polarity must come from the host, not focus.
++        monkeypatch.setattr(probe, "host_window_bounds", lambda timeout=3.0: (100, 100, 1200, 900, "Warp", 1003))
++        monkeypatch.setattr(probe, "capture_window", lambda wid, timeout=None: "/tmp/warp.png")
++        monkeypatch.setattr(probe, "downscale", lambda path, size=8, timeout=None: "/tmp/small.png")
++        monkeypatch.setattr(probe, "decode_png", lambda path: [(242, 241, 242)] * 64)
++
++        result = probe.probe_terminal_background(timeout=5.0)
++        assert result == "#f2f1f2"  # Warp's measured light background
++
++    def test_host_window_capture_failure_falls_back_to_frontmost(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_window_bounds", lambda timeout=3.0: (100, 100, 1200, 900, "Warp", 1003))
++        monkeypatch.setattr(probe, "capture_window", lambda wid, timeout=None: None)
++        monkeypatch.setattr(probe, "frontmost_window_bounds", lambda timeout=None: (0, 0, 100, 100, "Orca"))
++        monkeypatch.setattr(probe, "capture_region", lambda x, y, w, h, timeout=None: "/tmp/orca.png")
++        monkeypatch.setattr(probe, "downscale", lambda path, size=8, timeout=None: "/tmp/small.png")
++        monkeypatch.setattr(probe, "decode_png", lambda path: [(46, 49, 55)] * 64)
++
++        result = probe.probe_terminal_background(timeout=5.0)
++        assert result == "#2e3137"  # Orca's measured dark background
++
++    def test_bounds_failure_aborts(self, monkeypatch):
++        monkeypatch.setattr(probe, "host_window_bounds", lambda timeout=3.0: None)
++        monkeypatch.setattr(probe, "frontmost_window_bounds", lambda timeout=None: None)
++        assert probe.probe_terminal_background() is None
+diff --git a/tests/test_tui_gateway_server.py b/tests/test_tui_gateway_server.py
+index 64d9157c16..6f85a00ed1 100644
+--- a/tests/test_tui_gateway_server.py
++++ b/tests/test_tui_gateway_server.py
+@@ -21059,3 +21059,173 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
+     assert captured["row_update"] == (target, str(new_cwd))
+     assert live["cwd"] == str(new_cwd)
+     assert live.get("explicit_cwd") is True
++
++
++# ── Retained custom runtime regression coverage ─────────────────────────────
++
++def test_get_usage_emits_context_max_when_window_known_but_occupancy_unknown():
++    """The window size is factual metadata — emit it whenever known, even
++    before the first turn (last_prompt_tokens=0/missing) or right after a
++    compression, so the status line always shows a current/total readout.
++    Only the occupancy fields stay gated on a real last_prompt value."""
++    agent = types.SimpleNamespace(
++        model="test-model",
++        session_total_tokens=0,
++        context_compressor=types.SimpleNamespace(
++            last_prompt_tokens=0,
++            context_length=666_000,
++            compression_count=0,
++        ),
++    )
++    usage = server._get_usage(agent)
++    assert usage["context_max"] == 666_000
++    assert "context_used" not in usage
++    assert "context_percent" not in usage
++
++
++def test_format_live_context_does_not_substitute_cumulative_total(monkeypatch):
++    """The /context read-out must not fall back to the lifetime session total
++    when context_used is absent — that substitutes a cumulative number for the
++    current occupancy and reads as an impossible ~1.9M / 272K on long
++    Codex/OAuth sessions (#50421 class)."""
++    session = {
++        "agent": None,
++        "history": [],
++        "session_key": None,
++        "history_lock": threading.Lock(),
++        "_compute_host_active": True,
++        "_metadata_mirror": {
++            "model": "gpt-5.6-sol",
++            "provider": "openai-codex",
++            "usage": {"total": 1_900_000, "context_max": 272_000},
++        },
++        "_metadata_message_count": 0,
++    }
++    monkeypatch.setattr(server, "_get_db", lambda: None)
++    out = server._format_live_context_output(session)
++    # Fail closed: the cumulative total must never surface as current context,
++    # and with occupancy unknown no "Context usage:" line is emitted at all.
++    assert "1,900,000" not in out
++    assert "Context usage" not in out
++
++
++def test_get_usage_resume_estimate_fills_unknown_gap():
++    """A resumed session pre-first-turn has last_prompt_tokens=0; the seeded
++    build-time estimate must surface as the context read-out instead of an
++    unknown gauge."""
++
++    class _Comp:
++        context_length = 666_000
++        last_prompt_tokens = 0
++
++    class _Agent:
++        context_compressor = _Comp()
++        _tui_resumed_window_estimate = 163_000
++
++    usage = server._get_usage(_Agent())
++    assert usage["context_used"] == 163_000
++    assert usage["context_max"] == 666_000
++
++
++def test_get_usage_real_usage_supersedes_resume_estimate():
++    """Once a real turn measured occupancy, last_prompt_tokens wins."""
++
++    class _Comp:
++        context_length = 666_000
++        last_prompt_tokens = 42_000
++
++    class _Agent:
++        context_compressor = _Comp()
++        _tui_resumed_window_estimate = 163_000
++
++    usage = server._get_usage(_Agent())
++    assert usage["context_used"] == 42_000
++
++
++def test_get_usage_compression_sentinel_does_not_fall_back_to_estimate():
++    """The -1 "compression just ran, awaiting real usage" sentinel must stay
++    unknown — the window just shrank, so a stale resume estimate would
++    overstate."""
++
++    class _Comp:
++        context_length = 666_000
++        last_prompt_tokens = -1
++
++    class _Agent:
++        context_compressor = _Comp()
++        _tui_resumed_window_estimate = 163_000
++
++    usage = server._get_usage(_Agent())
++    assert "context_used" not in usage
++    assert usage["context_max"] == 666_000
++
++
++def test_get_usage_fresh_session_without_estimate_stays_unknown():
++    """No resume estimate and no real usage -> no context_used (the TUI then
++    renders the unknown gauge)."""
++
++    class _Comp:
++        context_length = 666_000
++        last_prompt_tokens = 0
++
++    class _Agent:
++        context_compressor = _Comp()
++
++    usage = server._get_usage(_Agent())
++    assert "context_used" not in usage
++    assert usage["context_max"] == 666_000
++
++
++def test_estimate_resumed_window_tail_and_budget_cap():
++    """Estimate walks the transcript tail newest-first and caps at the window
++    budget so the read-out can never exceed context_max."""
++
++    class _DB:
++        def get_messages(self, session_id, latest=False, limit=None, **kwargs):
++            return [
++                {"role": "user", "content": "u" * 4000},
++                {"role": "assistant", "content": "a" * 4000},
++                {"role": "tool", "content": "t" * 4000},
++            ]
++
++    class _Comp:
++        context_length = 500
++
++    class _Agent:
++        context_compressor = _Comp()
++
++    est = server._estimate_resumed_window(_Agent(), _DB(), "sid-1")
++    assert est == 500  # 3 messages of ~1000 rough tokens each -> capped at budget
++
++
++def test_estimate_resumed_window_small_tail_uncapped():
++    class _DB:
++        def get_messages(self, session_id, latest=False, limit=None, **kwargs):
++            return [{"role": "user", "content": "hello world"}]
++
++    class _Comp:
++        context_length = 666_000
++
++    class _Agent:
++        context_compressor = _Comp()
++
++    est = server._estimate_resumed_window(_Agent(), _DB(), "sid-1")
++    assert 0 < est < 666_000
++
++
++def test_estimate_resumed_window_fail_open():
++    """A broken DB getter must yield 0 (gauge stays unknown), not crash."""
++
++    class _BadDB:
++        def get_messages(self, session_id, latest=False, limit=None, **kwargs):
++            raise RuntimeError("db locked")
++
++    class _Comp:
++        context_length = 666_000
++
++    class _Agent:
++        context_compressor = _Comp()
++
++    assert server._estimate_resumed_window(_Agent(), _BadDB(), "sid-1") == 0
++    assert server._estimate_resumed_window(_Agent(), None, "sid-1") == 0
++    assert server._estimate_resumed_window(_Agent(), _BadDB(), "") == 0
+diff --git a/tests/tools/test_runtime_budget.py b/tests/tools/test_runtime_budget.py
+new file mode 100644
+index 0000000000..f2a5999131
+--- /dev/null
++++ b/tests/tools/test_runtime_budget.py
+@@ -0,0 +1,62 @@
++"""Contracts for interactive execution-budget guidance and runtime advice."""
++
++import time
++
++import pytest
++
++from tools.process_registry import ProcessRegistry, ProcessSession
++from tools.runtime_budget import (
++    RUNTIME_ADVICES,
++    runtime_advice_for_seconds,
++    runtime_metadata,
++)
++
++
++@pytest.mark.parametrize(
++    ("seconds", "expected_index"),
++    [
++        (0, 0),
++        (59.999, 0),
++        (60, 1),
++        (179.999, 1),
++        (180, 2),
++        (599.999, 2),
++        (600, 3),
++        (1799.999, 3),
++        (1800, 4),
++    ],
++)
++def test_runtime_advice_thresholds(seconds, expected_index):
++    assert runtime_advice_for_seconds(seconds) == RUNTIME_ADVICES[expected_index]
++
++
++def test_runtime_metadata_flags_silent_long_work_as_possible_stall():
++    metadata = runtime_metadata(301, progress_observed=False)
++
++    assert metadata["runtime_seconds"] == 301
++    assert metadata["progress_observed"] is False
++    assert "possible stall" in metadata["progress_advice"].lower()
++
++
++def test_runtime_metadata_accepts_observable_batch_progress():
++    metadata = runtime_metadata(901, progress_observed=True)
++
++    assert metadata["progress_observed"] is True
++    assert "continue monitoring" in metadata["progress_advice"].lower()
++
++
++def test_background_poll_returns_runtime_advice_and_progress_signal():
++    registry = ProcessRegistry()
++    session = ProcessSession(
++        id="proc_budget",
++        command="batch-job",
++        started_at=time.time() - 601,
++        output_buffer="step 3 of 10",
++    )
++    registry._running[session.id] = session
++
++    result = registry.poll(session.id)
++
++    assert result["runtime_advice"] == RUNTIME_ADVICES[3]
++    assert result["progress_observed"] is True
++    assert "continue monitoring" in result["progress_advice"].lower()
+diff --git a/tests/tools/test_terminal_foreground_timeout_cap.py b/tests/tools/test_terminal_foreground_timeout_cap.py
+index 0081de88a5..17a8f47e53 100644
+--- a/tests/tools/test_terminal_foreground_timeout_cap.py
++++ b/tests/tools/test_terminal_foreground_timeout_cap.py
+@@ -90,13 +90,9 @@ class TestForegroundTimeoutCap:
+         assert call_kwargs[0][0] == "pnpm dev --help"
+ 
+ 
+-    def test_config_default_above_cap_not_rejected(self):
+-        """When config default timeout > cap but model passes no timeout, execute normally.
+-
+-        Only the model's explicit timeout parameter triggers rejection,
+-        not the user's configured default.
+-        """
+-        from tools.terminal_tool import terminal_tool
++    def test_config_default_above_cap_is_clamped_not_rejected(self):
++        """A configured default cannot bypass the synchronous safety ceiling."""
++        from tools.terminal_tool import terminal_tool, FOREGROUND_MAX_TIMEOUT
+ 
+         # User configured TERMINAL_TIMEOUT=900 in their env
+         with patch("tools.terminal_tool._get_env_config",
+@@ -111,10 +107,11 @@ class TestForegroundTimeoutCap:
+                  patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+                 result = json.loads(terminal_tool(command="make build"))
+ 
+-        # Should execute with the config default, NOT be rejected
++        # The command still executes, but the configured default is clamped.
+         call_kwargs = mock_env.execute.call_args
+-        assert call_kwargs[1]["timeout"] == 900
++        assert call_kwargs[1]["timeout"] == FOREGROUND_MAX_TIMEOUT
+         assert "error" not in result or result["error"] is None
++        assert result["runtime_timeout_note"]
+ 
+ 
+     def test_exactly_at_max_not_rejected(self):
+diff --git a/tests/tools/test_terminal_runtime_budget.py b/tests/tools/test_terminal_runtime_budget.py
+new file mode 100644
+index 0000000000..ce5a437020
+--- /dev/null
++++ b/tests/tools/test_terminal_runtime_budget.py
+@@ -0,0 +1,57 @@
++"""Terminal integration contracts for execution-budget metadata and caps."""
++
++import json
++from unittest.mock import MagicMock, patch
++
++
++def _env_config(**overrides):
++    config = {
++        "env_type": "local",
++        "timeout": 180,
++        "cwd": "/tmp",
++        "host_cwd": None,
++        "modal_mode": "auto",
++        "docker_image": "",
++        "singularity_image": "",
++        "modal_image": "",
++        "daytona_image": "",
++    }
++    config.update(overrides)
++    return config
++
++
++def _run_with_mock_env(*, config_timeout=180):
++    from tools.terminal_tool import terminal_tool
++
++    env = MagicMock()
++    env.cwd = "/tmp"
++    env.execute.return_value = {"output": "done", "returncode": 0}
++    with (
++        patch("tools.terminal_tool._get_env_config", return_value=_env_config(timeout=config_timeout)),
++        patch("tools.terminal_tool._start_cleanup_thread"),
++        patch("tools.terminal_tool._active_environments", {"default": env}),
++        patch("tools.terminal_tool._last_activity", {"default": 0}),
++        patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}),
++    ):
++        result = json.loads(terminal_tool(command="echo done"))
++    return env, result
++
++
++def test_foreground_terminal_returns_runtime_advice():
++    _env, result = _run_with_mock_env()
++
++    assert result["runtime_seconds"] >= 0
++    assert result["runtime_advice"].startswith("<1 min: Healthy")
++
++
++def test_configured_foreground_timeout_is_safely_clamped_to_ten_minutes():
++    from tools.terminal_tool import FOREGROUND_MAX_TIMEOUT
++
++    env, result = _run_with_mock_env(config_timeout=3600)
++
++    assert result["error"] is None
++    assert env.execute.call_args.kwargs["timeout"] == FOREGROUND_MAX_TIMEOUT
++    assert result["runtime_timeout_note"] == (
++        f"Configured foreground timeout 3600s was clamped to the safe synchronous "
++        f"limit of {FOREGROUND_MAX_TIMEOUT}s."
++    )
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+index bea6118a98..fd5110f772 100644
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -373,6 +373,16 @@ def format_uptime_short(seconds: int) -> str:
+     return f"{hours}h {mins}m"
+ 
+ 
++def _runtime_metadata_for_session(
++    session: "ProcessSession", *, progress_observed: bool
++) -> dict:
++    """Return elapsed-runtime advice for a tracked background session."""
++    from tools.runtime_budget import runtime_metadata
++
++    elapsed = time.time() - session.started_at if session.started_at else 0.0
++    return runtime_metadata(elapsed, progress_observed=progress_observed)
++
++
+ @dataclass
+ class ProcessSession:
+     """A tracked background process with output buffering."""
+@@ -2119,6 +2129,11 @@ class ProcessRegistry:
+             "uptime_seconds": int(time.time() - session.started_at),
+             "output_preview": output_preview,
+         }
++        result.update(
++            _runtime_metadata_for_session(
++                session, progress_observed=bool(output_preview.strip())
++            )
++        )
+         if session.exited:
+             result["exit_code"] = session.exit_code
+             result["completion_reason"] = session.completion_reason
+@@ -2177,6 +2192,11 @@ class ProcessRegistry:
+             "total_lines": total_lines,
+             "showing": f"{len(selected)} lines",
+         }
++        result.update(
++            _runtime_metadata_for_session(
++                session, progress_observed=bool(full_output.strip())
++            )
++        )
+         if session.exited and observed_completion_output:
+             self._completion_consumed.add(session_id)
+         return result
+@@ -2248,6 +2268,11 @@ class ProcessRegistry:
+                     "termination_source": session.termination_source,
+                     "output": strip_ansi(session.output_buffer[-2000:]),
+                 }
++                result.update(
++                    _runtime_metadata_for_session(
++                        session, progress_observed=bool(session.output_buffer.strip())
++                    )
++                )
+                 if timeout_note:
+                     result["timeout_note"] = timeout_note
+                 return result
+@@ -2259,6 +2284,11 @@ class ProcessRegistry:
+                     "output": strip_ansi(session.output_buffer[-1000:]),
+                     "note": "User sent a new message -- wait interrupted",
+                 }
++                result.update(
++                    _runtime_metadata_for_session(
++                        session, progress_observed=bool(session.output_buffer.strip())
++                    )
++                )
+                 if timeout_note:
+                     result["timeout_note"] = timeout_note
+                 return result
+@@ -2277,6 +2307,11 @@ class ProcessRegistry:
+             # identical waits after misreading this result as an error.
+             "process_running": True,
+         }
++        result.update(
++            _runtime_metadata_for_session(
++                session, progress_observed=bool(session.output_buffer.strip())
++            )
++        )
+         uptime = time.time() - session.started_at if session.started_at else None
+         base_note = (
+             f"Wait window of {effective_timeout}s elapsed — the process is "
+diff --git a/tools/runtime_budget.py b/tools/runtime_budget.py
+new file mode 100644
+index 0000000000..6c61185493
+--- /dev/null
++++ b/tools/runtime_budget.py
+@@ -0,0 +1,68 @@
++"""Runtime-budget classifications shared by terminal and process tools.
++
++The terminal surface returns one concise advisory for the observed runtime
++instead of repeating the whole policy table in every tool result. Background
++process reads additionally report whether any output has been observed, which
++lets the agent distinguish productive batch work from a silent possible stall.
++"""
++
++from __future__ import annotations
++
++from typing import Optional
++
++
++RUNTIME_ADVICES: tuple[str, ...] = (
++    "<1 min: Healthy — continue normally.",
++    "1–3 min: Acceptable — continue, but monitor runtime.",
++    "3–10 min: Next iteration, consider reducing scope, sampling, or optimizing.",
++    "10–30 min: Next iteration, avoid repeating this approach; verify a faster alternative first.",
++    ">30 min: Do not repeat interactively; redesign the approach or use a batch job.",
++)
++
++
++def runtime_advice_for_seconds(elapsed_seconds: float) -> str:
++    """Return the advisory bucket for a non-negative observed runtime."""
++    elapsed = max(0.0, float(elapsed_seconds))
++    if elapsed < 60:
++        return RUNTIME_ADVICES[0]
++    if elapsed < 180:
++        return RUNTIME_ADVICES[1]
++    if elapsed < 600:
++        return RUNTIME_ADVICES[2]
++    if elapsed < 1800:
++        return RUNTIME_ADVICES[3]
++    return RUNTIME_ADVICES[4]
++
++
++def runtime_metadata(
++    elapsed_seconds: float,
++    *,
++    progress_observed: Optional[bool] = None,
++) -> dict:
++    """Build low-noise runtime metadata for a terminal/process response.
++
++    ``progress_observed`` is omitted for synchronous terminal results because
++    their output only becomes visible when the command returns. Background
++    process reads pass a real output-observed signal.
++    """
++    elapsed = max(0.0, float(elapsed_seconds))
++    metadata = {
++        "runtime_seconds": round(elapsed, 2),
++        "runtime_advice": runtime_advice_for_seconds(elapsed),
++    }
++    if progress_observed is None:
++        return metadata
++
++    metadata["progress_observed"] = bool(progress_observed)
++    if elapsed >= 180:
++        if progress_observed:
++            metadata["progress_advice"] = (
++                "Observable output exists; this can remain an explicit batch job, "
++                "but continue monitoring runtime and progress."
++            )
++        else:
++            metadata["progress_advice"] = (
++                "No output has been observed; treat this as a possible stall and "
++                "stop it safely if practical before redesigning the approach."
++            )
++    return metadata
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index fe1b17039d..2265eb09a5 100644
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -1136,8 +1136,8 @@ Do NOT use cat/head/tail (use read_file), grep/rg/find/ls (use search_files), se
+ NEVER pipe a build/test command through tail/head/cat to shorten output (e.g. `cargo build | tail -20`): output is auto-truncated with the full text saved to a file, and the pipe makes exit_code report the LAST pipeline command's status (tail's 0), masking real failures. Run the command bare; the same applies to `cmd || echo failed`, which also masks the exit code.
+ Environment state persists: activate a virtualenv or export variables once per session, not before every command.
+ 
+-Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds.
+-Background: set background=true (returns a session_id). Pair with notify_on_complete=true for bounded tasks; leave silent only for servers/daemons that never exit. Never use nohup/setsid/trailing '&' — use background=true so Hermes tracks the process. After starting a server, verify readiness with a health check, then act in a separate call; no blind sleep loops. Manage with process(action="poll"/"wait").
++Estimate runtime before execution. Foreground (default) should normally finish within 3 minutes and is hard-capped at 10 minutes; use a faster approach or explicit justification before starting work expected to exceed 10 minutes.
++Background: set background=true (returns a session_id) for explicit batch work so progress stays observable. Pair with notify_on_complete=true for bounded tasks; leave silent only for servers/daemons that never exit. Never use nohup/setsid/trailing '&' — use background=true so Hermes tracks the process. After starting a server, verify readiness with a health check, then act in a separate call; no blind sleep loops. Manage with process(action="poll"/"wait").
+ Working directory: use 'workdir' for per-command cwd. When a command changes the session cwd (cd, pushd), the result includes a "cwd" field — trust it instead of prefixing every command with 'cd'.
+ PTY: set pty=true for interactive CLIs (they hang without it). Pipe git output to cat if it might page.
+ """
+@@ -2942,6 +2942,7 @@ def terminal_tool(
+                 f"timeout must be a positive number of seconds (got {timeout})."
+             )
+         effective_timeout = timeout or default_timeout
++        runtime_timeout_note = None
+ 
+         # Reject foreground commands where the model explicitly requests
+         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
+@@ -2952,6 +2953,16 @@ def terminal_tool(
+                 f"notify_on_complete=true for long-running commands."
+             )
+ 
++        # A configured default must not bypass the synchronous ceiling. An
++        # unexpectedly long foreground command is safely stopped by the
++        # environment timeout; explicit batch work belongs in background mode.
++        if not background and effective_timeout > FOREGROUND_MAX_TIMEOUT:
++            runtime_timeout_note = (
++                f"Configured foreground timeout {effective_timeout}s was clamped "
++                f"to the safe synchronous limit of {FOREGROUND_MAX_TIMEOUT}s."
++            )
++            effective_timeout = FOREGROUND_MAX_TIMEOUT
++
+         # Guardrail: long-lived server/watch commands should run as managed
+         # background sessions, not foreground shell hacks.
+         if not background:
+@@ -3553,6 +3564,7 @@ def terminal_tool(
+             retry_count = 0
+             result = None
+             command_cwd = None
++            execution_started_at = time.monotonic()
+ 
+             # Clean interrupt slate for an approved command, ONCE before the
+             # retry loop: drop a stale bit that landed on this thread during the
+@@ -3586,11 +3598,16 @@ def terminal_tool(
+                 except Exception as e:
+                     error_str = str(e).lower()
+                     if "timeout" in error_str:
+-                        return json.dumps({
++                        error_result = {
+                             "output": "",
+                             "exit_code": 124,
+                             "error": f"Command timed out after {effective_timeout} seconds"
+-                        }, ensure_ascii=False)
++                        }
++                        from tools.runtime_budget import runtime_metadata
++                        error_result.update(runtime_metadata(time.monotonic() - execution_started_at))
++                        if runtime_timeout_note:
++                            error_result["runtime_timeout_note"] = runtime_timeout_note
++                        return json.dumps(error_result, ensure_ascii=False)
+                     
+                     # Retry on transient errors
+                     if retry_count < max_retries:
+@@ -3603,13 +3620,18 @@ def terminal_tool(
+                     
+                     logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
+                                  max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
+-                    return json.dumps({
++                    error_result = {
+                         "output": "",
+                         "exit_code": -1,
+                         "error": _redact_terminal_error_text(
+                             f"Command execution failed: {type(e).__name__}: {e}"
+                         )
+-                    }, ensure_ascii=False)
++                    }
++                    from tools.runtime_budget import runtime_metadata
++                    error_result.update(runtime_metadata(time.monotonic() - execution_started_at))
++                    if runtime_timeout_note:
++                        error_result["runtime_timeout_note"] = runtime_timeout_note
++                    return json.dumps(error_result, ensure_ascii=False)
+                 
+                 # Got a result
+                 break
+@@ -3749,6 +3771,10 @@ def terminal_tool(
+                 "exit_code": returncode,
+                 "error": None,
+             }
++            from tools.runtime_budget import runtime_metadata
++            result_dict.update(runtime_metadata(time.monotonic() - execution_started_at))
++            if runtime_timeout_note:
++                result_dict["runtime_timeout_note"] = runtime_timeout_note
+             # cwd echo: when the command changed the session's working
+             # directory (cd, pushd, ...), tell the model where it ended up.
+             # Production mining shows 60% of terminal calls carry a
+diff --git a/tui_gateway/methods_session.py b/tui_gateway/methods_session.py
+index b82c4df717..321300a278 100644
+--- a/tui_gateway/methods_session.py
++++ b/tui_gateway/methods_session.py
+@@ -1717,7 +1717,7 @@ def _(rid, params: dict) -> dict:
+                 "context_max": usage.get("context_max", 0) or 0,
+                 "context_percent": usage.get("context_percent", 0) or 0,
+                 "context_used": usage.get("context_used", 0) or 0,
+-                "estimated_total": usage.get("context_used", 0) or usage.get("total", 0) or 0,
++                "estimated_total": usage.get("context_used", 0) or 0,
+                 "model": _metadata_mirror(session).get("model", ""),
+             },
+         )
+diff --git a/tui_gateway/server.py b/tui_gateway/server.py
+index e6a669af62..8c72c51ced 100644
+--- a/tui_gateway/server.py
++++ b/tui_gateway/server.py
+@@ -2780,6 +2780,36 @@ def _start_agent_build(sid: str, session: dict) -> None:
+             # Session DB row deferred to first run_conversation() call.
+             # pending_title applied post-first-message (see cli.exec handler).
+             current["agent"] = agent
++            # Resumed sessions have no measured window occupancy until the
++            # first turn builds a prompt (the compressor only measures on a
++            # real prompt); seed a transcript-tail estimate so the status line
++            # shows real usage right after resume instead of an unknown gauge.
++            # Fresh sessions skip — no history to estimate. The launch-profile
++            # build has no session_db handle (profile_home is None), so open a
++            # short-lived one for the estimate. Fail-open.
++            try:
++                if resume_sid:
++                    est_db = session_db
++                    owns_est_db = False
++                    if est_db is None:
++                        from hermes_state import SessionDB
++
++                        est_db = SessionDB(db_path=Path(_hermes_home) / "state.db")
++                        owns_est_db = True
++                    try:
++                        _resume_est = _estimate_resumed_window(agent, est_db, resume_sid)
++                        if _resume_est and _resume_est > 0:
++                            setattr(agent, "_tui_resumed_window_estimate", _resume_est)
++                    finally:
++                        if owns_est_db:
++                            try:
++                                _close = getattr(est_db, "close", None)
++                                if callable(_close):
++                                    _close()
++                            except Exception:
++                                pass
++            except Exception:
++                pass
+             # Baseline for the per-turn config sync; the profile home
+             # override is still active here.
+             current["config_model_seen"] = _config_model_target()
+@@ -6167,13 +6197,32 @@ def _get_usage(agent) -> dict:
+         # (conversation_compression.py) to 0 so the transitional turn reads as
+         # unknown (no gauge) instead of leaking context_used=-1. Matches the
+         # CLI status-bar path (cli.py _get_status_bar_snapshot).
++        #
++        # Resume-gap fallback (TUI fork): a RESUMED session has no measured
++        # occupancy until the first turn of this process builds a prompt —
++        # last_prompt_tokens is 0 and the gauge would read "unknown" even
++        # though the transcript tail that WILL load into the window is sitting
++        # in the session DB. _build() seeds a rough estimate
++        # (agent._tui_resumed_window_estimate) for exactly that case, so the
++        # status line shows real usage instead of an unknown gauge. It is
++        # superseded by the first real record_usage(). The -1 sentinel must
++        # NOT fall back to it (the window just shrank under compression, so a
++        # stale estimate would overstate).
+         last_prompt = getattr(comp, "last_prompt_tokens", 0) or 0
+         if last_prompt < 0:
+             last_prompt = 0
++        elif not last_prompt:
++            last_prompt = getattr(agent, "_tui_resumed_window_estimate", 0) or 0
+         ctx_max = getattr(comp, "context_length", 0) or 0
++        # context_max is factual window metadata — emit it whenever the window
++        # is known (idle, pre-first-turn, or post-compression), so the status
++        # line always shows a current/total readout. Gate ONLY the occupancy
++        # fields (context_used/percent) on a real last_prompt value. Mirrors
++        # the CLI status-bar path (cli.py _get_status_bar_snapshot).
++        if ctx_max:
++            usage["context_max"] = ctx_max
+         if ctx_max and last_prompt:
+             usage["context_used"] = last_prompt
+-            usage["context_max"] = ctx_max
+             usage["context_percent"] = max(0, min(100, round(last_prompt / ctx_max * 100)))
+         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
+     # Live count of background/async subagents still running (delegate_task
+@@ -6196,6 +6245,50 @@ def _get_usage(agent) -> dict:
+     return usage
+ 
+ 
++def _estimate_resumed_window(agent, session_db, session_id, max_messages: int = 400) -> int:
++    """Rough current-window occupancy for a resumed session, or 0.
++
++    The built-in compressor only measures ``last_prompt_tokens`` when a prompt
++    is built, so a resumed session reads as "no real usage yet" until the first
++    turn of this process — even though the transcript tail that WILL load into
++    the window is already in the session DB. This estimates that tail (newest
++    first, so the number tracks what the next prompt will actually carry) and
++    caps it at the window budget so the read-out can never exceed
++    ``context_max`` (no #50421-style 1.9m/120k clamp artefact). The first real
++    ``record_usage()`` supersedes the estimate. 0 means "no usable estimate" —
++    callers leave the gauge unknown.
++    """
++    try:
++        comp = getattr(agent, "context_compressor", None)
++        if comp is None:
++            return 0
++        budget = getattr(comp, "context_length", 0) or 0
++        if not budget or not session_db or not session_id:
++            return 0
++        getter = getattr(session_db, "get_messages", None)
++        if not callable(getter):
++            return 0
++        # get_messages(latest=True, limit=N) returns the LAST N messages in
++        # chronological order — reverse to walk the window tail newest-first.
++        raw_msgs = getter(session_id, latest=True, limit=max_messages)
++        msgs = list(raw_msgs) if isinstance(raw_msgs, (list, tuple)) else []
++    except Exception:
++        return 0
++    if not msgs:
++        return 0
++    from agent.model_metadata import estimate_request_tokens_rough
++
++    total = 0
++    for msg in reversed(msgs):
++        try:
++            total += estimate_request_tokens_rough([msg])
++        except Exception:
++            continue
++        if total >= budget:
++            return budget
++    return total
++
++
+ def _probe_credentials(agent) -> str:
+     """Light credential check at session creation — returns warning or ''.
+ 
+@@ -14820,7 +14913,11 @@ def _format_live_context_output(session: dict) -> str:
+     if model:
+         lines.append(f"Model: {model}")
+     lines.append(f"Provider: {provider}")
+-    context_used = int(usage.get("context_used") or usage.get("total") or 0)
++    # Never fall back to the lifetime session total for "current context":
++    # session_total_tokens is cumulative and would read as an impossible
++    # current-context value (e.g. ~1.9M / 272K) on long Codex/OAuth sessions.
++    # Mirrors the #50421 fix already applied in _get_usage.
++    context_used = int(usage.get("context_used") or 0)
+     context_max = int(usage.get("context_max") or 0)
+     if context_used:
+         if context_max:
+diff --git a/ui-tui/src/__tests__/appChromeBlockedTimers.test.tsx b/ui-tui/src/__tests__/appChromeBlockedTimers.test.tsx
+index 56d80a350f..93f9d06b4f 100644
+--- a/ui-tui/src/__tests__/appChromeBlockedTimers.test.tsx
++++ b/ui-tui/src/__tests__/appChromeBlockedTimers.test.tsx
+@@ -88,21 +88,10 @@ const idleProps: StatusRuleProps = {
+   status: 'ready',
+   statusColor: DEFAULT_THEME.color.ok,
+   t: DEFAULT_THEME,
+-  turnStartedAt: null,
+   usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
+   voiceLabel: ''
+ }
+ 
+-// Busy swaps the idle read-out for the FaceTicker, which owns the glyph +
+-// verb + elapsed-clock trio.
+-const busyProps: StatusRuleProps = {
+-  ...idleProps,
+-  busy: true,
+-  indicatorStyle: 'kaomoji',
+-  lastTurnEndedAt: null,
+-  turnStartedAt: T0 - 30_000
+-}
+-
+ /** Delays of every interval armed while the spy was installed. */
+ const armedDelays = (spy: IntervalSpy) => spy.mock.calls.map(call => call[1])
+ 
+@@ -240,34 +229,6 @@ describe('status-chrome timers under an occluding overlay', () => {
+     expect(oneSecondTimers(intervalSpy)).toBe(0)
+   })
+ 
+-  it('arms the FaceTicker glyph/verb/clock trio mid-turn when nothing covers the rule', () => {
+-    mount(busyProps)
+-
+-    // kaomoji cadence for the glyph + verb rotation, plus the elapsed clock.
+-    expect(armedDelays(intervalSpy)).toContain(2500)
+-    expect(oneSecondTimers(intervalSpy)).toBeGreaterThan(0)
+-  })
+-
+-  it('arms no FaceTicker timer mid-turn while the modal widget slot is open', () => {
+-    patchOverlayState({ widget: { appId: 'demo', state: null } })
+-
+-    mount(busyProps)
+-
+-    expect(armedDelays(intervalSpy)).not.toContain(2500)
+-    expect(oneSecondTimers(intervalSpy)).toBe(0)
+-  })
+-
+-  it('keeps the FaceTicker running mid-turn under a flow-layout sudo prompt', () => {
+-    // `sudo` is in `$isBlocked` but renders in PromptZone's normal flow, so it
+-    // pushes the rule down rather than covering it — the trio must keep going.
+-    patchOverlayState({ sudo: { requestId: 'sudo-1' } })
+-
+-    mount(busyProps)
+-
+-    expect(armedDelays(intervalSpy)).toContain(2500)
+-    expect(oneSecondTimers(intervalSpy)).toBeGreaterThan(0)
+-  })
+-
+   it('keeps the clocks running when a floating overlay cannot reach a bottom status rule', () => {
+     // FloatingOverlays is `position="absolute" bottom="100%"` inside
+     // ComposerPane's relative Box, so it grows UPWARD: it covers the `at="top"`
+@@ -406,7 +367,6 @@ describe('AppLayout status-rule visibility', () => {
+ 
+     // The rule is genuinely rendered — the approval prompt pushed it, it did
+     // not cover it — so freezing its clock would freeze something visible.
+-    expect(layout.output()).toContain('~/repo')
+     expect(layout.output()).toContain('1m 0s')
+     expect(oneSecondTimers(intervalSpy)).toBe(2)
+ 
+diff --git a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
+index 07fc468768..2e6393a9ae 100644
+--- a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
++++ b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
+@@ -1,5 +1,5 @@
+ import React from 'react'
+-import { describe, expect, it, vi } from 'vitest'
++import { describe, expect, it } from 'vitest'
+ 
+ import { StatusRule } from '../components/appChrome.js'
+ import { DEFAULT_THEME } from '../theme.js'
+@@ -26,34 +26,6 @@ const textContent = (node: ReactNodeLike): string => {
+   return ''
+ }
+ 
+-const findClickableWithText = (node: ReactNodeLike, needle: string): React.ReactElement | null => {
+-  if (node === null || node === undefined || typeof node === 'boolean') {
+-    return null
+-  }
+-
+-  if (Array.isArray(node)) {
+-    for (const child of node) {
+-      const found = findClickableWithText(child, needle)
+-
+-      if (found) {
+-        return found
+-      }
+-    }
+-
+-    return null
+-  }
+-
+-  if (!React.isValidElement(node)) {
+-    return null
+-  }
+-
+-  if (typeof node.props.onClick === 'function' && textContent(node).includes(needle)) {
+-    return node
+-  }
+-
+-  return findClickableWithText(node.props.children, needle)
+-}
+-
+ // Find the innermost element whose own (direct) text content includes the
+ // needle. Used to assert the colour the notice text is rendered with.
+ const findElementWithText = (node: ReactNodeLike, needle: string): React.ReactElement | null => {
+@@ -92,39 +64,28 @@ const baseProps = {
+   bgCount: 0,
+   busy: false,
+   cols: 100,
+-  cwdLabel: '~/repo',
+   liveSessionCount: 0,
+   model: 'opus-4.8',
+   sessionStartedAt: null,
+   status: 'ready',
+   statusColor: DEFAULT_THEME.color.ok,
+   t: DEFAULT_THEME,
+-  turnStartedAt: null,
+   usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
+   voiceLabel: ''
+ }
+ 
+ describe('StatusRule session title', () => {
+-  it('pins the named session at the far-right edge instead of the cwd label', () => {
++  it('does not render the session title in the status line', () => {
+     const element = StatusRule({
+       ...baseProps,
++      // @ts-expect-error — sessionTitle was removed from the status line
++      // surface; the prop no longer exists (fork: statusline-hide-session-title).
+       sessionTitle: 'weekly-digest'
+     })
+ 
+     const rendered = textContent(element)
+-    const title = findElementWithText(element, 'weekly-digest')
+-
+-    expect(rendered).toContain('weekly-digest')
+-    expect(rendered).not.toContain('~/repo')
+-    // Regression for issue #82465: a raw, full-saturation accent-hue
+-    // background (e.g. #FFBF00 on DARK_SEEDS) paired with statusFg (a
+-    // near-white tone never designed to sit on it) rendered at roughly a
+-    // 1.5-2:1 contrast ratio -- unreadable. No background fill at all;
+-    // the accent color goes on the text instead, matching the theme's
+-    // own convention that a raw accent hue is never used as a solid
+-    // fill elsewhere (fills are always softened, e.g. activeRow).
+-    expect(title?.props.backgroundColor).toBeUndefined()
+-    expect(title?.props.color).toBe(DEFAULT_THEME.color.accent)
++
++    expect(rendered).not.toContain('weekly-digest')
+   })
+ })
+ 
+@@ -154,8 +115,11 @@ describe('StatusRule background-subagent indicator', () => {
+   })
+ 
+   it('spells out the auto-resume hint when idle with subagents in flight', () => {
++    // Wide enough for the full fork status strip (adaptive water body + TPS
++    // readout) to still leave the low-priority resume hint its budget.
+     const element = StatusRule({
+       ...baseProps,
++      cols: 160,
+       usage: { ...baseProps.usage, active_subagents: 1 }
+     })
+ 
+@@ -165,6 +129,7 @@ describe('StatusRule background-subagent indicator', () => {
+   it('pluralizes the resume hint for multiple in-flight subagents', () => {
+     const element = StatusRule({
+       ...baseProps,
++      cols: 160,
+       usage: { ...baseProps.usage, active_subagents: 3 }
+     })
+ 
+@@ -203,48 +168,16 @@ describe('StatusRule background-subagent indicator', () => {
+   })
+ })
+ 
+-describe('StatusRule session count click target', () => {
+-  it('makes the live session count itself clickable', () => {
+-    const openSwitcher = vi.fn()
+-
+-    const element = StatusRule({
+-      bgCount: 0,
+-      busy: false,
+-      cols: 100,
+-      cwdLabel: '~/repo',
+-      liveSessionCount: 1,
+-      model: 'kimi-k2.6',
+-      onSessionCountClick: openSwitcher,
+-      sessionStartedAt: null,
+-      status: 'ready',
+-      statusColor: DEFAULT_THEME.color.ok,
+-      t: DEFAULT_THEME,
+-      turnStartedAt: null,
+-      usage: { total: 0 },
+-      voiceLabel: ''
+-    })
+-
+-    const clickableSessionCount = findClickableWithText(element, '1 session')
+-
+-    expect(clickableSessionCount).not.toBeNull()
+-    clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
+-    expect(openSwitcher).toHaveBeenCalledOnce()
+-  })
+-
+-  it('keeps status + model and drops the low-value tail on a narrow terminal', () => {
++describe('StatusRule narrow-terminal essentials', () => {
++  it('keeps model and drops the low-value tail on a narrow terminal', () => {
+     const element = StatusRule({
+       bgCount: 0,
+       busy: false,
+       cols: 44,
+-      cwdLabel: '~/src/hermes-agent/apps/desktop (bb/tui-statusbar-responsive)',
+-      liveSessionCount: 3,
+       model: 'opus-4.8',
+-      onSessionCountClick: vi.fn(),
+       sessionStartedAt: Date.now() - 60_000,
+-      status: 'ready',
+       statusColor: DEFAULT_THEME.color.ok,
+       t: DEFAULT_THEME,
+-      turnStartedAt: null,
+       usage: {
+         calls: 0,
+         context_max: 200_000,
+@@ -254,16 +187,17 @@ describe('StatusRule session count click target', () => {
+         output: 0,
+         total: 50_000
+       },
+-      voiceLabel: 'voice off'
++      voiceLabel: ''
+     })
+ 
+     const rendered = textContent(element)
+ 
+-    // Must-keep essentials survive intact …
+-    expect(rendered).toContain('ready')
++    // Must-keep essentials survive intact … no idle status text (fork:
++    // statusline drops "ready"), model always visible.
++    expect(rendered).not.toContain('ready')
+     expect(rendered).toContain('opus 4.8')
+-    // … while the low-value tail (session count) is dropped, not truncated.
+-    expect(rendered).not.toContain('3 sessions')
++    // … while the low-value tail (voice off) is dropped, not truncated.
++    expect(rendered).not.toContain('voice')
+   })
+ })
+ 
+@@ -284,12 +218,11 @@ describe('StatusRule credits notice render priority', () => {
+     expect(rendered).toContain('50k')
+   })
+ 
+-  it('busy wins: the FaceTicker shows, the notice is hidden mid-turn', () => {
++  it('busy wins: the notice is hidden mid-turn, model stays visible', () => {
+     const element = StatusRule({
+       ...baseProps,
+       busy: true,
+-      notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: '⚠ 90% used' },
+-      turnStartedAt: Date.now()
++      notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: '⚠ 90% used' }
+     })
+ 
+     const rendered = textContent(element)
+@@ -491,3 +424,35 @@ describe('StatusRule idle-since read-out', () => {
+     expect(findComponentByName(element, 'IdleSince')).toBeNull()
+   })
+ })
++
++describe('StatusRule fork chrome (R4)', () => {
++  it('starts with the water wave — no leading border dash', () => {
++    const element = StatusRule({ ...baseProps })
++
++    // The fork dropped the `─ ` border: the status strip begins flush with
++    // the water wave instead of a dash prefix (regression: border dash
++    // reintroduced by a future port).
++    expect(textContent(element).startsWith('─')).toBe(false)
++  })
++
++  it('renders the context readout without a leading separator', () => {
++    const element = StatusRule({ ...baseProps })
++
++    // ctxLabel ("50k/200k" from baseProps) must sit flush against the right
++    // spacer — no ` │ ` prefix (regression: separator reintroduced).
++    expect(textContent(element)).toContain('50k/200k')
++    expect(textContent(element)).not.toContain('│ 50k/200k')
++  })
++
++  it('shows unknown occupancy as "–" instead of fabricating 0', () => {
++    // A resumed session with history but no new turn has NO context_used
++    // (last_prompt_tokens unset) — the readout must not lie as 0/200k.
++    const element = StatusRule({
++      ...baseProps,
++      usage: { ...baseProps.usage, context_used: undefined }
++    })
++
++    expect(textContent(element)).toContain('–/200k')
++    expect(textContent(element)).not.toContain('0/200k')
++  })
++})
+diff --git a/ui-tui/src/__tests__/constants.test.ts b/ui-tui/src/__tests__/constants.test.ts
+index 5f95078787..0d426e1b73 100644
+--- a/ui-tui/src/__tests__/constants.test.ts
++++ b/ui-tui/src/__tests__/constants.test.ts
+@@ -1,6 +1,5 @@
+ import { describe, expect, it } from 'vitest'
+ 
+-import { FACES } from '../content/faces.js'
+ import { HOTKEYS } from '../content/hotkeys.js'
+ import { PLACEHOLDERS } from '../content/placeholders.js'
+ import { TOOL_VERBS, VERBS } from '../content/verbs.js'
+@@ -13,7 +12,7 @@ describe('constants', () => {
+   it('ZERO', () => expect(ZERO).toEqual({ calls: 0, input: 0, output: 0, total: 0 }))
+ 
+   it('string arrays are populated', () => {
+-    for (const arr of [FACES, PLACEHOLDERS, VERBS]) {
++    for (const arr of [PLACEHOLDERS, VERBS]) {
+       expect(arr.length).toBeGreaterThan(0)
+       arr.forEach(s => expect(typeof s).toBe('string'))
+     }
+diff --git a/ui-tui/src/__tests__/createGatewayEventHandler.test.ts b/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
+index d36dbfa224..2a19991959 100644
+--- a/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
++++ b/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
+@@ -1,7 +1,18 @@
++import { execFile } from 'child_process'
++
+ import { beforeEach, describe, expect, it, vi } from 'vitest'
+ 
+-import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
++// ESM namespace exports can't be spied on directly, so wrap execFile in a
++// vi.fn that delegates to the original — tests can override it per-case.
++vi.mock('child_process', async importOriginal => {
++  const mod = await importOriginal<{ execFile: typeof execFile }>()
++
++  return { ...mod, execFile: vi.fn(mod.execFile) }
++})
++
++import { createGatewayEventHandler, resetLiveBackgroundProbe } from '../app/createGatewayEventHandler.js'
+ import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
++import { $tpsTarget, resetTps } from '../app/tpsStore.js'
+ import { turnController } from '../app/turnController.js'
+ import { getTurnState, resetTurnState } from '../app/turnStore.js'
+ import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+@@ -63,6 +74,7 @@ describe('createGatewayEventHandler', () => {
+     resetOverlayState()
+     resetUiState()
+     resetTurnState()
++    resetTps()
+     turnController.fullReset()
+     patchUiState({ showReasoning: true })
+   })
+@@ -2146,4 +2158,121 @@ describe('createGatewayEventHandler', () => {
+       expect(appended).toHaveLength(0)
+     })
+   })
++
++  it('feeds the status-bar TPS meter from streamed message.delta text', () => {
++    const appended: Msg[] = []
++    const onEvent = createGatewayEventHandler(buildCtx(appended))
++
++    vi.useFakeTimers()
++
++    try {
++      onEvent({ payload: { text: 'streaming chunk one. ' }, type: 'message.delta' } as any)
++      vi.advanceTimersByTime(300)
++      onEvent({ payload: { text: 'streaming chunk two with more content. ' }, type: 'message.delta' } as any)
++      vi.advanceTimersByTime(300)
++      onEvent({ payload: { text: 'and a third chunk to keep it moving. ' }, type: 'message.delta' } as any)
++      vi.advanceTimersByTime(300)
++
++      expect($tpsTarget.get()).toBeGreaterThan(0)
++    } finally {
++      vi.useRealTimers()
++    }
++  })
++
++  it('restarts the TPS meter when deltas arrive for a different session', () => {
++    const appended: Msg[] = []
++    const onEvent = createGatewayEventHandler(buildCtx(appended))
++
++    vi.useFakeTimers()
++
++    try {
++      onEvent({ payload: { text: 'session a content. ' }, session_id: 'a', type: 'message.delta' } as any)
++      vi.advanceTimersByTime(300)
++      onEvent({ payload: { text: 'more session a content. ' }, session_id: 'a', type: 'message.delta' } as any)
++      vi.advanceTimersByTime(300)
++      expect($tpsTarget.get()).toBeGreaterThan(0)
++
++      // A delta that belongs to a different session resets the meter so the
++      // new session's rate starts clean (and the old value can't bleed in).
++      onEvent({ payload: { text: 'x' }, session_id: 'b', type: 'message.delta' } as any)
++      vi.advanceTimersByTime(300)
++
++      expect($tpsTarget.get()).toBe(0)
++    } finally {
++      vi.useRealTimers()
++    }
++  })
++
++  describe('live background re-probe (HERMES_TUI_PROBE_CMD)', () => {
++    const stubProbe = (onCall: () => string) => {
++      const execMock = vi.mocked(execFile) as unknown as ReturnType<typeof vi.fn>
++      execMock.mockImplementation(((_cmd: string, _opts: unknown, cb?: unknown) => {
++        const callback = typeof cb === 'function' ? cb : (typeof _opts === 'function' ? _opts : null)
++        callback?.(null, onCall())
++      }) as any)
++      const stdoutWrite = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
++
++      return { execMock, stdoutWrite }
++    }
++
++    const teardown = (execMock: ReturnType<typeof vi.fn>, stdoutWrite: ReturnType<typeof vi.spyOn>) => {
++      execMock.mockReset()
++      stdoutWrite.mockRestore()
++      vi.unstubAllEnvs()
++      vi.useRealTimers()
++      resetLiveBackgroundProbe()
++    }
++
++    it('re-applies the theme when the probe reports a changed background', () => {
++      const appended: Msg[] = []
++      vi.useFakeTimers()
++      let out = '#111111\n'
++      const { execMock, stdoutWrite } = stubProbe(() => out)
++
++      vi.stubEnv('HERMES_TUI_PROBE_CMD', '/fake/probe')
++      vi.stubEnv('HERMES_TUI_BACKGROUND', '#111111')
++
++      try {
++        resetLiveBackgroundProbe()
++        createGatewayEventHandler(buildCtx(appended))
++
++        // First probe tick (fires after the interval): same background ->
++        // no theme churn.
++        vi.advanceTimersByTime(30_000)
++        const probeCall1 = execMock.mock.calls.find(c => c[0] === '/fake/probe')
++        expect(probeCall1).toBeDefined()
++        expect(process.env.HERMES_TUI_BACKGROUND).toBe('#111111')
++
++        // Second tick: the host switched to a light background -> re-apply.
++        out = '#ffffff\n'
++        vi.advanceTimersByTime(30_000)
++        expect(process.env.HERMES_TUI_BACKGROUND).toBe('#ffffff')
++      } finally {
++        teardown(execMock, stdoutWrite)
++      }
++    })
++
++    it('ignores probe output when a theme pin is active', () => {
++      const appended: Msg[] = []
++      vi.useFakeTimers()
++      const { execMock, stdoutWrite } = stubProbe(() => '#ffffff\n')
++
++      vi.stubEnv('HERMES_TUI_PROBE_CMD', '/fake/probe')
++      vi.stubEnv('HERMES_TUI_BACKGROUND', '#111111')
++      vi.stubEnv('HERMES_TUI_THEME', 'dark')
++
++      try {
++        resetLiveBackgroundProbe()
++        createGatewayEventHandler(buildCtx(appended))
++
++        vi.advanceTimersByTime(30_000)
++        vi.advanceTimersByTime(30_000)
++        // A pinned theme means the probe must not clobber it.
++        expect(process.env.HERMES_TUI_BACKGROUND).toBe('#111111')
++        expect(process.env.HERMES_TUI_THEME).toBe('dark')
++      } finally {
++        teardown(execMock, stdoutWrite)
++      }
++    })
++  })
+ })
+diff --git a/ui-tui/src/__tests__/midTurnSubmitOrder.test.ts b/ui-tui/src/__tests__/midTurnSubmitOrder.test.ts
+new file mode 100644
+index 0000000000..cb7d760595
+--- /dev/null
++++ b/ui-tui/src/__tests__/midTurnSubmitOrder.test.ts
+@@ -0,0 +1,95 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest'
++
++import { turnController } from '../app/turnController.js'
++import { resetTurnState } from '../app/turnStore.js'
++import { patchUiState, resetUiState } from '../app/uiStore.js'
++import { appendTranscriptMessage } from '../lib/messages.js'
++import type { Msg } from '../types.js'
++
++// Regression test for the mid-turn ordering inversion: when a user submits
++// a message while a tool loop is still in flight (busy-input
++// interrupt/redirect), the old turn's tool trail must end up ABOVE the new
++// user bubble — not flushed below it by the redirected turn's
++// message.complete. Chronology: tool.start → tool.complete → busy user
++// submit → message.complete must render trail, then user, then output.
++describe('mid-turn submit ordering', () => {
++  beforeEach(() => {
++    resetUiState()
++    resetTurnState()
++    turnController.fullReset()
++    patchUiState({ showReasoning: true, sid: 'test-session' })
++  })
++
++  const runTool = (toolId: string, name: string) => {
++    turnController.recordToolStart(toolId, name, 'context')
++    turnController.recordToolComplete(toolId, name, undefined, 'done', 10)
++  }
++
++  it('settles the in-flight tool trail above a busy user bubble', () => {
++    // Old turn: start a tool loop, complete one tool.
++    turnController.startMessage()
++    runTool('tool-1', 'terminal')
++
++    // User submits mid-tool-loop → the checkpoint must hand the observed
++    // trail back so the caller appends it BEFORE the bubble.
++    const settled = turnController.checkpointBeforeUserBubble()
++    expect(settled.length).toBeGreaterThan(0)
++
++    let transcript: Msg[] = []
++
++    for (const msg of settled) {
++      transcript = appendTranscriptMessage(transcript, msg)
++    }
++
++    const userIdx = transcript.length
++    transcript = appendTranscriptMessage(transcript, { role: 'user', text: 'hold on' })
++
++    // The redirected turn's message.complete only appends what happens
++    // AFTER the interjection — the old trail must not reappear below.
++    const { finalMessages } = turnController.recordMessageComplete({ text: 'adjusted' })
++    transcript = [...transcript, ...finalMessages]
++
++    const trailIdx = transcript.findIndex(msg => msg.kind === 'trail' && msg.tools?.length)
++    const bubbleIdx = transcript.findIndex(msg => msg.role === 'user' && msg.text === 'hold on')
++    const finalIdx = transcript.findIndex(msg => msg.role === 'assistant' && msg.text === 'adjusted')
++
++    expect(trailIdx).toBeGreaterThanOrEqual(0)
++    expect(bubbleIdx).toBeGreaterThan(trailIdx)
++    expect(userIdx).toBeGreaterThan(trailIdx)
++    expect(finalIdx).toBeGreaterThan(bubbleIdx)
++  })
++
++  it('leaves a fresh thread untouched when nothing is in flight', () => {
++    turnController.startMessage()
++    const settled = turnController.checkpointBeforeUserBubble()
++
++    expect(settled).toEqual([])
++
++    let transcript: Msg[] = []
++
++    for (const msg of settled) {
++      transcript = appendTranscriptMessage(transcript, msg)
++    }
++
++    transcript = appendTranscriptMessage(transcript, { role: 'user', text: 'first message' })
++    expect(transcript).toHaveLength(1)
++    expect(transcript[0]).toMatchObject({ role: 'user', text: 'first message' })
++  })
++
++  it('returns nothing after the turn already settled (interrupt path)', () => {
++    turnController.startMessage()
++    runTool('tool-1', 'terminal')
++
++    // Simulate a Stop: interruptTurn flushes segments itself.
++    const { appendMessage, gw, sid, sys } = {
++      appendMessage: vi.fn(),
++      gw: { request: vi.fn(async () => ({})) },
++      sid: 'test-session',
++      sys: vi.fn()
++    }
++
++    turnController.interruptTurn({ appendMessage, gw, sid, sys })
++
++    expect(turnController.checkpointBeforeUserBubble()).toEqual([])
++  })
++})
+diff --git a/ui-tui/src/__tests__/sessionExit.test.ts b/ui-tui/src/__tests__/sessionExit.test.ts
+new file mode 100644
+index 0000000000..a8ed1ec2de
+--- /dev/null
++++ b/ui-tui/src/__tests__/sessionExit.test.ts
+@@ -0,0 +1,78 @@
++import { describe, expect, it, vi } from 'vitest'
++
++import {
++  durableExitSessionId,
++  emitSessionIdAtExit,
++  flushExitSessionId,
++  rememberExitSessionId
++} from '../lib/sessionExit.js'
++
++describe('durableExitSessionId', () => {
++  it('returns only a durable stored session id', () => {
++    expect(durableExitSessionId('20260809_133043_0bb6cb')).toBe('20260809_133043_0bb6cb')
++  })
++
++  it('suppresses missing or empty ids instead of falling back to the gateway sid', () => {
++    expect(durableExitSessionId(undefined)).toBeNull()
++    expect(durableExitSessionId('')).toBeNull()
++  })
++})
++
++describe('emitSessionIdAtExit', () => {
++  it('emits the session id with a resume hint', () => {
++    const emit = vi.fn()
++
++    emitSessionIdAtExit('abc123', emit)
++
++    expect(emit).toHaveBeenCalledTimes(1)
++    expect(emit).toHaveBeenCalledWith('\nSession abc123 ended — resume with: hermes --resume abc123\n')
++  })
++
++  it('stays silent when there is no active session', () => {
++    const emit = vi.fn()
++
++    emitSessionIdAtExit(null, emit)
++
++    expect(emit).not.toHaveBeenCalled()
++  })
++
++  it('tolerates a dead stdout (EIO / closed dashboard tab) without throwing', () => {
++    const boom = vi.fn(() => {
++      throw new Error('EIO')
++    })
++
++    expect(() => emitSessionIdAtExit('abc123', boom)).not.toThrow()
++  })
++})
++
++describe('rememberExitSessionId / flushExitSessionId', () => {
++  it('regression: flush emits the remembered durable id exactly once, then clears', () => {
++    const emit = vi.fn()
++
++    rememberExitSessionId('20260804_113730_2d05f2')
++    flushExitSessionId(emit)
++    flushExitSessionId(emit)
++
++    expect(emit).toHaveBeenCalledTimes(1)
++    expect(emit).toHaveBeenCalledWith(
++      '\nSession 20260804_113730_2d05f2 ended — resume with: hermes --resume 20260804_113730_2d05f2\n'
++    )
++  })
++
++  it('regression: flush with nothing remembered stays silent', () => {
++    const emit = vi.fn()
++
++    flushExitSessionId(emit)
++
++    expect(emit).not.toHaveBeenCalled()
++  })
++
++  it('regression: a null/empty remember stays silent (no stale id printed on crash paths)', () => {
++    const emit = vi.fn()
++
++    rememberExitSessionId(null)
++    flushExitSessionId(emit)
++
++    expect(emit).not.toHaveBeenCalled()
++  })
++})
+diff --git a/ui-tui/src/__tests__/statusBarTicker.test.ts b/ui-tui/src/__tests__/statusBarTicker.test.ts
+deleted file mode 100644
+index 4f3369bfa3..0000000000
+--- a/ui-tui/src/__tests__/statusBarTicker.test.ts
++++ /dev/null
+@@ -1,18 +0,0 @@
+-import { describe, expect, it } from 'vitest'
+-
+-import { padVerb, VERB_PAD_LEN } from '../components/appChrome.js'
+-import { VERBS } from '../content/verbs.js'
+-
+-describe('FaceTicker verb padding', () => {
+-  it('pads every verb to the same width', () => {
+-    for (const verb of VERBS) {
+-      expect(padVerb(verb)).toHaveLength(VERB_PAD_LEN)
+-    }
+-  })
+-
+-  it('keeps trailing ellipsis attached', () => {
+-    for (const verb of VERBS) {
+-      expect(padVerb(verb).startsWith(`${verb}…`)).toBe(true)
+-    }
+-  })
+-})
+diff --git a/ui-tui/src/__tests__/statusRule.test.ts b/ui-tui/src/__tests__/statusRule.test.ts
+index 1a5334eb13..20bb34b3de 100644
+--- a/ui-tui/src/__tests__/statusRule.test.ts
++++ b/ui-tui/src/__tests__/statusRule.test.ts
+@@ -1,62 +1,7 @@
+ import { describe, expect, it } from 'vitest'
+ 
+ import type { StatusBarSegments } from '../components/appChrome.js'
+-import { busyIndicatorWidth, statusBarSegments, statusRuleWidths } from '../components/appChrome.js'
+-
+-describe('statusRuleWidths', () => {
+-  it('keeps the status rule within the terminal width', () => {
+-    for (const cols of [8, 12, 20, 40, 100]) {
+-      const widths = statusRuleWidths(cols, '~/src/hermes-agent/main (some-long-branch-name)')
+-
+-      expect(widths.leftWidth + widths.separatorWidth + widths.rightWidth).toBeLessThanOrEqual(cols)
+-      expect(widths.leftWidth).toBeGreaterThan(0)
+-    }
+-  })
+-
+-  it('truncates the cwd segment before it can wrap in skinny terminals', () => {
+-    const widths = statusRuleWidths(24, '~/src/hermes-agent/main (bb/some-extremely-long-branch)')
+-
+-    expect(widths.rightWidth).toBeLessThan('~/src/hermes-agent/main (bb/some-extremely-long-branch)'.length)
+-    expect(widths.leftWidth).toBeGreaterThanOrEqual(8)
+-  })
+-
+-  it('omits the cwd segment when there is no room for it', () => {
+-    expect(statusRuleWidths(2, 'abcdef')).toEqual({ leftWidth: 2, rightWidth: 0, separatorWidth: 0 })
+-  })
+-
+-  it('budgets the cwd segment by display width, not utf-16 length', () => {
+-    const widths = statusRuleWidths(30, '目录/分支')
+-
+-    expect(widths.leftWidth + widths.separatorWidth + widths.rightWidth).toBeLessThanOrEqual(30)
+-    expect(widths.rightWidth).toBeGreaterThan('目录/分支'.length)
+-  })
+-
+-  it('reserves the high-priority left content so the cwd/branch yields first', () => {
+-    const cwd = '~/src/hermes-agent/apps/desktop (bb/tui-statusbar-responsive)'
+-
+-    const greedy = statusRuleWidths(70, cwd) // legacy behaviour: cwd hogs the row
+-    const reserved = statusRuleWidths(70, cwd, 40) // reserve indicator+model+ctx
+-
+-    expect(reserved.leftWidth).toBeGreaterThanOrEqual(40)
+-    expect(reserved.leftWidth).toBeGreaterThan(greedy.leftWidth)
+-    expect(reserved.rightWidth).toBeLessThan(greedy.rightWidth)
+-    expect(reserved.leftWidth + reserved.separatorWidth + reserved.rightWidth).toBeLessThanOrEqual(70)
+-  })
+-
+-  it('drops the cwd entirely when the essential left content needs the whole row', () => {
+-    expect(statusRuleWidths(40, '~/some/cwd (branch)', 60)).toEqual({
+-      leftWidth: 40,
+-      rightWidth: 0,
+-      separatorWidth: 0
+-    })
+-  })
+-
+-  it('keeps the default (no reservation) behaviour identical for legacy callers', () => {
+-    const cwd = '~/src/hermes-agent/main (some-long-branch-name)'
+-
+-    expect(statusRuleWidths(80, cwd, 0)).toEqual(statusRuleWidths(80, cwd))
+-  })
+-})
++import { statusBarSegments } from '../components/appChrome.js'
+ 
+ describe('statusBarSegments', () => {
+   it('shows every segment on a wide terminal', () => {
+@@ -64,27 +9,24 @@ describe('statusBarSegments', () => {
+ 
+     expect(s).toEqual({
+       compactCtx: false,
+-      bar: true,
+       duration: true,
+       compressions: true,
+       voice: true,
+       bg: true,
+-      subagents: true
++      subagents: true,
++      tps: true
+     } satisfies StatusBarSegments)
+   })
+ 
+-  it('collapses the context bar to a token count on narrow terminals', () => {
++  it('collapses the context read-out to a token count on narrow terminals', () => {
+     const s = statusBarSegments(60)
+ 
+     expect(s.compactCtx).toBe(true)
+-    expect(s.bar).toBe(false)
+     expect(s.duration).toBe(false)
+   })
+ 
+   it('sheds tail segments in priority order as the terminal narrows', () => {
+-    // the context bar is the last of the tail to go.
+     const order: (keyof ReturnType<typeof statusBarSegments>)[] = [
+-      'bar',
+       'duration',
+       'compressions',
+       'voice',
+@@ -103,18 +45,3 @@ describe('statusBarSegments', () => {
+     }
+   })
+ })
+-
+-describe('busyIndicatorWidth', () => {
+-  it('reserves a bare spinner for the verb-less unicode style', () => {
+-    // unicode is a 1-col braille spinner with no verb; far slimmer than the
+-    // kaomoji face which carries a wide glyph + rotating verb.
+-    expect(busyIndicatorWidth('unicode', false)).toBeLessThan(busyIndicatorWidth('kaomoji', false))
+-    expect(busyIndicatorWidth('unicode', false)).toBe(1)
+-  })
+-
+-  it('reserves room for the elapsed-time tail only when a turn is timed', () => {
+-    for (const style of ['kaomoji', 'emoji', 'ascii', 'unicode'] as const) {
+-      expect(busyIndicatorWidth(style, true)).toBeGreaterThan(busyIndicatorWidth(style, false))
+-    }
+-  })
+-})
+diff --git a/ui-tui/src/__tests__/tps.test.ts b/ui-tui/src/__tests__/tps.test.ts
+new file mode 100644
+index 0000000000..abb1f1485f
+--- /dev/null
++++ b/ui-tui/src/__tests__/tps.test.ts
+@@ -0,0 +1,196 @@
++import { describe, expect, it } from 'vitest'
++
++import {
++  CHARS_PER_TOKEN,
++  createTpsTracker,
++  EMA_ALPHA,
++  formatTps,
++  MAX_INSTANT_TPS,
++  MIN_TPS_SAMPLE_MS,
++  OUTLIER_DAMP_FACTOR,
++  STALE_WINDOW_MS
++} from '../lib/tps.js'
++
++// Deterministic clock: the tracker accepts an explicit `now`, so tests drive
++// time without fake timers.
++let clock = 0
++const now = () => clock
++
++const advance = (ms: number) => {
++  clock += ms
++}
++
++// Feed `ticks` samples of `charsPerTick` chars, each spaced just past the
++// minimum measurement window. Each tick constitutes its own measurement
++// window (pending resets after every emit), so the steady state converges on
++// `charsPerTick / CHARS_PER_TOKEN` tokens per `spacingMs`.
++const feedCharsAtRate = (
++  tracker: ReturnType<typeof createTpsTracker>,
++  charsPerTick: number,
++  ticks: number,
++  spacingMs: number = MIN_TPS_SAMPLE_MS + 10
++) => {
++  for (let i = 0; i < ticks; i += 1) {
++    advance(spacingMs)
++    tracker.sample(charsPerTick, now())
++  }
++}
++
++describe('createTpsTracker', () => {
++  it('reads 0 before any sample', () => {
++    const tracker = createTpsTracker()
++
++    expect(tracker.read()).toBe(0)
++  })
++
++  it('seeds the clock on the first sample and emits nothing', () => {
++    const tracker = createTpsTracker()
++    tracker.sample(100, now())
++
++    expect(tracker.read()).toBe(0)
++  })
++
++  it('measures the first window including its seed tokens', () => {
++    const tracker = createTpsTracker()
++
++    // Seed: 200 chars → 50 tokens arrive at t=0 (window start while seeding).
++    tracker.sample(200, now())
++    // 1s later 400 chars → +100 tokens: 150 tokens / 1s = 150 t/s.
++    advance(1000)
++    tracker.sample(400, now())
++
++    expect(tracker.read()).toBeCloseTo(150, 0)
++  })
++
++  it('accumulates rapid sub-window samples before emitting', () => {
++    const tracker = createTpsTracker()
++    tracker.sample(120, now()) // +30 tokens (seed)
++    advance(50)
++    tracker.sample(160, now()) // +40 tokens
++    advance(50)
++    tracker.sample(200, now()) // +50 tokens → 120 pending in 100ms
++
++    expect(tracker.read()).toBe(0)
++
++    // 500ms later one more sample fires the window: 130 tokens / 0.6s ≈ 217.
++    advance(500)
++    tracker.sampleTokens(10, now())
++    expect(tracker.read()).toBeCloseTo(130 / (600 / 1000), 0)
++  })
++
++  it('EMA-smooths a steady stream toward the true rate, capped below the burst limit', () => {
++    const tracker = createTpsTracker()
++
++    // 200 chars (50 tokens) per 260ms ≈ 192 t/s sustained — the second
++    // window includes the seed tokens, so the readout converges toward 192
++    // from above and never exceeds MAX_INSTANT_TPS.
++    feedCharsAtRate(tracker, 200, 8)
++
++    const rate = tracker.read()
++    expect(rate).toBeGreaterThan(0)
++    expect(rate).toBeLessThanOrEqual(MAX_INSTANT_TPS)
++  })
++
++  it('damps outlier bursts harder than steady samples', () => {
++    const tracker = createTpsTracker()
++    // Small steady stream: 100 chars (25 tokens) per 260ms ≈ 96 t/s. After
++    // 12 ticks the EMA has converged to ~98.
++    feedCharsAtRate(tracker, 100, 12)
++    const steady = tracker.read()
++    expect(steady).toBeLessThan(130)
++
++    // One 3× burst (300 chars) in a single tick → instant ≈ 288 t/s, which
++    // is more than 2× the steady value — the damped alpha must apply.
++    advance(MIN_TPS_SAMPLE_MS + 10)
++    tracker.sample(300, now())
++
++    const instantRate = 75 / ((MIN_TPS_SAMPLE_MS + 10) / 1000)
++    const undamped = steady * (1 - EMA_ALPHA) + instantRate * EMA_ALPHA
++    const damped = steady * (1 - EMA_ALPHA * OUTLIER_DAMP_FACTOR) + instantRate * EMA_ALPHA * OUTLIER_DAMP_FACTOR
++
++    expect(tracker.read()).toBeCloseTo(damped, 0)
++    expect(tracker.read()).toBeLessThan(undamped)
++    expect(tracker.read()).toBeGreaterThan(steady)
++  })
++
++  it('freezes across a stale gap (tool execution) instead of dividing by idle time', () => {
++    const tracker = createTpsTracker()
++    feedCharsAtRate(tracker, 200, 2)
++    const before = tracker.read()
++    expect(before).toBeGreaterThan(0)
++
++    // Tool loop: no samples for longer than STALE_WINDOW_MS.
++    advance(STALE_WINDOW_MS + 5000)
++    tracker.sample(200, now())
++
++    // The gap must not drag the rate down — the value holds (the window is
++    // restarted, so the post-gap sample is measured on its own).
++    expect(tracker.read()).toBe(before)
++
++    // The next stream after the gap keeps measuring from the fresh window.
++    feedCharsAtRate(tracker, 200, 4)
++    expect(tracker.read()).toBeGreaterThan(0)
++  })
++
++  it('reset drops the smoothed value and restarts measurement', () => {
++    const tracker = createTpsTracker()
++    feedCharsAtRate(tracker, 200, 2)
++    expect(tracker.read()).toBeGreaterThan(0)
++
++    tracker.reset(now())
++    expect(tracker.read()).toBe(0)
++
++    // First sample after reset only re-seeds the clock.
++    tracker.sample(200, now())
++    expect(tracker.read()).toBe(0)
++  })
++
++  it('ignores non-positive samples but lets their ticks fire the window', () => {
++    const tracker = createTpsTracker()
++    tracker.sample(0, now())
++    tracker.sample(-10, now())
++    tracker.sampleTokens(0, now())
++
++    expect(tracker.read()).toBe(0)
++  })
++
++  it('sampleTokens feeds exact token counts through the same EMA', () => {
++    const tracker = createTpsTracker()
++    feedCharsAtRate(tracker, 200, 3)
++    const before = tracker.read()
++
++    advance(MIN_TPS_SAMPLE_MS + 10)
++    tracker.sampleTokens(1000, now())
++
++    expect(tracker.read()).toBeGreaterThan(before)
++  })
++
++  it('converts chars to tokens with the 4:1 heuristic', () => {
++    const tracker = createTpsTracker()
++    tracker.sample(400, now()) // seed: 100 tokens
++    advance(1000)
++    tracker.sample(4, now()) // +1 token, fires a 1s window
++
++    expect(tracker.read()).toBeCloseTo(101 / (1000 / 1000), 0)
++    expect(tracker.read()).toBeCloseTo(400 / CHARS_PER_TOKEN + 1, 0)
++  })
++})
++
++describe('formatTps', () => {
++  it('formats with one decimal, padded to a fixed 5-char width', () => {
++    expect(formatTps(45.234)).toBe(' 45.2 t/s')
++    expect(formatTps(9.8)).toBe('  9.8 t/s')
++    expect(formatTps(300)).toBe('300.0 t/s')
++    expect(formatTps(0.05)).toBe('  0.1 t/s')
++  })
++
++  it('renders a placeholder for absent values', () => {
++    expect(formatTps(0)).toBe('----- t/s')
++    expect(formatTps(-1)).toBe('----- t/s')
++  })
++
++  it('keeps constant width so surrounding status text never shifts', () => {
++    const widths = new Set(['0.05', '9.8', '45.2', '300'].map(v => formatTps(Number(v)).length))
++    expect(widths.size).toBe(1)
++  })
++})
+diff --git a/ui-tui/src/__tests__/waterPulse.test.ts b/ui-tui/src/__tests__/waterPulse.test.ts
+new file mode 100644
+index 0000000000..09e8049cec
+--- /dev/null
++++ b/ui-tui/src/__tests__/waterPulse.test.ts
+@@ -0,0 +1,142 @@
++import { describe, expect, it } from 'vitest'
++
++import { $wavePulse, pulseWave } from '../app/wavePulseStore.js'
++import {
++  freshWavePeaks,
++  pointedCrestOffset,
++  quantizeWaterHeight,
++  splashClockAt,
++  WATER_CELL_COUNT,
++  WATER_FRAME_MS,
++  WATER_SPLASH_MS,
++  waterFrame,
++  waterFrameStep,
++  waterSplashLift
++} from '../components/appChrome.js'
++
++describe('water drift cadence', () => {
++  it('adds a narrow crest needle without moving troughs or broad shoulders', () => {
++    expect(pointedCrestOffset(0.8)).toBe(0)
++    expect(pointedCrestOffset(-1)).toBeCloseTo(-0.25)
++    expect(Math.abs(pointedCrestOffset(-0.5))).toBeLessThan(0.01)
++  })
++
++  it('holds the previous Braille row inside a small quantization deadband', () => {
++    expect(quantizeWaterHeight(2.49)).toBe(2)
++    expect(quantizeWaterHeight(2.51)).toBe(3)
++    expect(quantizeWaterHeight(2.6, 2)).toBe(2)
++    expect(quantizeWaterHeight(2.7, 2)).toBe(3)
++    expect(quantizeWaterHeight(2.4, 3)).toBe(3)
++    expect(quantizeWaterHeight(2.3, 3)).toBe(2)
++  })
++
++  it('keeps one render cadence while TPS changes phase velocity', () => {
++    expect(WATER_FRAME_MS).toBe(60)
++    expect(waterFrameStep(-5)).toBe(2)
++    expect(waterFrameStep(0)).toBe(2)
++    expect(waterFrameStep(15)).toBe(3)
++    expect(waterFrameStep(200)).toBe(3)
++  })
++
++  it('is deterministic per frame and advances with the frame', () => {
++    expect(waterFrame(5)).toBe(waterFrame(5))
++    expect(waterFrame(5)).not.toBe(waterFrame(6))
++  })
++
++  it('always renders the full water body width', () => {
++    for (const frame of [0, 1, 7, 42]) {
++      expect(waterFrame(frame)).toHaveLength(WATER_CELL_COUNT)
++    }
++  })
++})
++
++describe('water splash physics', () => {
++  it('derives splash lifetime from wall time and deactivates at the exact boundary', () => {
++    expect(splashClockAt(1_000, 1_000)).toBe(0)
++    expect(splashClockAt(1_000, 1_899)).toBe(899)
++    expect(splashClockAt(1_000, 1_900)).toBe(-1)
++    expect(splashClockAt(1_000, 2_500)).toBe(-1)
++  })
++
++  it('starts as a localized impact and then sends a symmetric wake outward', () => {
++    const peaks = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 3)
++    const origin = WATER_CELL_COUNT
++    const early = { clock: 180, origin, peaks }
++    const travelling = { clock: 480, origin, peaks }
++
++    expect(waterSplashLift(origin, WATER_CELL_COUNT * 2, early)).toBeGreaterThan(
++      waterSplashLift(0, WATER_CELL_COUNT * 2, early)
++    )
++    expect(waterSplashLift(origin + 15, WATER_CELL_COUNT * 2, travelling)).toBeGreaterThan(
++      waterSplashLift(origin, WATER_CELL_COUNT * 2, travelling)
++    )
++    expect(waterSplashLift(origin - 15, WATER_CELL_COUNT * 2, travelling)).toBeCloseTo(
++      waterSplashLift(origin + 15, WATER_CELL_COUNT * 2, travelling)
++    )
++    expect(
++      waterSplashLift(origin, WATER_CELL_COUNT * 2, {
++        clock: WATER_SPLASH_MS,
++        origin,
++        peaks
++      })
++    ).toBe(0)
++  })
++
++  it('applies the initial impact locally instead of lifting the whole raster', () => {
++    const peaks = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 3)
++    const drift = waterFrame(0)
++
++    const impact = waterFrame(0, {
++      clock: 180,
++      origin: WATER_CELL_COUNT,
++      peaks
++    })
++
++    expect(impact[0]).toBe(drift[0])
++    expect(impact[12]).not.toBe(drift[12])
++    expect(impact[24]).toBe(drift[24])
++  })
++
++  it('builds a deterministic spatially correlated peak field from the pulse seed', () => {
++    const first = freshWavePeaks(50, 11)
++    const replay = freshWavePeaks(50, 11)
++    const nextPulse = freshWavePeaks(50, 12)
++
++    expect(first).toEqual(replay)
++    expect(first).not.toEqual(nextPulse)
++
++    for (let index = 1; index < first.length; index += 1) {
++      expect(Math.abs(first[index]! - first[index - 1]!)).toBeLessThan(0.8)
++    }
++  })
++
++  it('fresh peaks stay inside the splash range and cover every pixel', () => {
++    const peaks = freshWavePeaks()
++
++    expect(peaks).toHaveLength(WATER_CELL_COUNT * 2)
++
++    for (const peak of peaks) {
++      expect(peak).toBeGreaterThanOrEqual(1)
++      expect(peak).toBeLessThan(3.6)
++    }
++  })
++
++  it('returns exactly to the drifting surface when the wake has settled', () => {
++    const peaks = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 3.2)
++    const staleSurface = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 0)
++    const drift = waterFrame(3)
++
++    expect(waterFrame(3, { peaks, clock: WATER_SPLASH_MS }, staleSurface)).toBe(drift)
++    expect(waterFrame(3, { peaks, clock: WATER_SPLASH_MS + 1000 }, staleSurface)).toBe(drift)
++  })
++})
++
++describe('wave pulse store', () => {
++  it('bumps once per pulse and keeps the count monotonic', () => {
++    $wavePulse.set(0)
++    pulseWave()
++    pulseWave()
++
++    expect($wavePulse.get()).toBe(2)
++  })
++})
+diff --git a/ui-tui/src/app/createGatewayEventHandler.ts b/ui-tui/src/app/createGatewayEventHandler.ts
+index 78fb1ed5c3..ce9f5380d1 100644
+--- a/ui-tui/src/app/createGatewayEventHandler.ts
++++ b/ui-tui/src/app/createGatewayEventHandler.ts
+@@ -29,13 +29,20 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
+ import type { GatewayEventHandlerContext } from './interfaces.js'
+ import { getOverlayState, patchOverlayState } from './overlayStore.js'
+ import { flashGoodVibes, flashPet } from './petFlashStore.js'
++import { feedTpsChars, resetTps } from './tpsStore.js'
+ import { turnController } from './turnController.js'
+ import { getTurnState } from './turnStore.js'
+ import { getUiState, patchUiState } from './uiStore.js'
+ import { isWakeUserDisabled } from './wakeState.js'
++import { pulseWave } from './wavePulseStore.js'
+ 
+ const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
+ 
++// TPS meter session scoping: a delta for a different session_id means the
++// active session switched, so the meter restarts clean (see message.delta /
++// reasoning.delta feeds below).
++let tpsLastSid: string | null = null
++
+ type VoiceSubmitMode = 'direct' | 'draft'
+ 
+ const normalizeVoiceSubmitMode = (value: unknown): VoiceSubmitMode =>
+@@ -240,6 +247,59 @@ export function applyConfiguredTuiTheme(raw: unknown): void {
+ 
+ let themeBackgroundSyncStarted = false
+ 
++// Live pixel re-probe: the pixel probe seeds HERMES_TUI_BACKGROUND at launch,
++// but a session can move between hosts (or a host can change its theme) while
++// running — Herdr panes especially, since OSC replies are swallowed and the
++// TUI never hears about the new colors.  Re-run the probe command on an
++// interval and re-apply the theme when the measured background moves, so the
++// polarity fixes itself without a restart.
++const LIVE_PROBE_INTERVAL_MS = 30_000
++
++let liveProbeStarted = false
++
++/** Test hook: clear the once-only guard so a fresh handler re-arms the probe. */
++export function resetLiveBackgroundProbe(): void {
++  liveProbeStarted = false
++}
++
++export function startLiveBackgroundProbe(): void {
++  const probeCmd = process.env.HERMES_TUI_PROBE_CMD
++
++  if (liveProbeStarted || !probeCmd) {
++    return
++  }
++
++  liveProbeStarted = true
++
++  const probe = () => {
++    if (process.env.HERMES_TUI_THEME || process.env.HERMES_TUI_LIGHT) {
++      return
++    }
++
++    execFile(probeCmd, { timeout: 10_000 }, (error, stdout) => {
++      if (error) {
++        return
++      }
++
++      const hex = stdout.trim().toLowerCase()
++
++      if (!/^#[0-9a-f]{6}$/.test(hex)) {
++        return
++      }
++
++      if (hex === (process.env.HERMES_TUI_BACKGROUND ?? '').toLowerCase()) {
++        return
++      }
++
++      process.env.HERMES_TUI_BACKGROUND = hex
++      reapplyTheme()
++    })
++  }
++
++  const timer = setInterval(probe, LIVE_PROBE_INTERVAL_MS)
++  timer.unref?.()
++}
++
+ /**
+  * Re-derive the theme from the terminal's ACTUAL background color once the
+  * OSC-11 probe answers. The env heuristics `detectLightMode` runs at module
+@@ -417,6 +477,7 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
+ 
+ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
+   syncThemeToTerminalBackground()
++  startLiveBackgroundProbe()
+ 
+   const { rpc } = ctx.gateway
+   const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
+@@ -876,7 +937,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+         // Credits/usage notice from the gateway. Payload is snake_case on the
+         // wire and stays snake_case in UiState.notice (no mapping layer). The
+         // text already carries its own glyph; turnController decides whether to
+-        // show now or hold until turn end (FaceTicker wins while busy).
++        // show now or hold until turn end (the busy indicator wins while busy).
+         const p = ev.payload
+ 
+         if (!p?.text) {
+@@ -1101,6 +1162,17 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+ 
+       case 'reasoning.delta':
+         if (ev.payload?.text) {
++          // Feed the status-bar TPS meter from reasoning streams too (long
++          // analyses keep the readout live instead of sitting on the idle
++          // placeholder). Metric-only; the transcript path is untouched.
++          const reasoningSid = ev.session_id ?? null
++
++          if (reasoningSid !== tpsLastSid) {
++            tpsLastSid = reasoningSid
++            resetTps()
++          }
++
++          feedTpsChars(String(ev.payload.text).length)
+           turnController.recordReasoningDelta(ev.payload.text, Boolean(ev.payload.verbose))
+         }
+ 
+@@ -1168,6 +1240,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+         return
+ 
+       case 'tool.start':
++        // Every tool call triggers one water-wave splash in the status line.
++        pulseWave()
+         turnController.recordTodos(ev.payload.todos)
+         turnController.recordToolStart(
+           ev.payload.tool_id,
+@@ -1406,11 +1480,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+         )
+ 
+         return
++      case 'message.delta': {
++        // Feed the status-bar TPS meter from the raw streamed text (the
++        // same `text` field recordMessageDelta consumes — never `rendered`,
++        // which carries ANSI markup). A delta for a different session means
++        // the active session switched, so the meter restarts clean.
++        const tpsSid = ev.session_id ?? null
++
++        if (tpsSid !== tpsLastSid) {
++          tpsLastSid = tpsSid
++          resetTps()
++        }
+ 
+-      case 'message.delta':
++        feedTpsChars(String(ev.payload?.text ?? '').length)
+         turnController.recordMessageDelta(ev.payload ?? {})
+ 
+         return
++      }
++
+       case 'message.interim': {
+         const text = ev.payload?.text
+ 
+diff --git a/ui-tui/src/app/submissionCore.ts b/ui-tui/src/app/submissionCore.ts
+index aa6cd98db6..0504513f9b 100644
+--- a/ui-tui/src/app/submissionCore.ts
++++ b/ui-tui/src/app/submissionCore.ts
+@@ -71,6 +71,14 @@ export function submitPrompt(
+     deps.setLastUserMsg(text)
+ 
+     if (show) {
++      // A mid-turn submit (busy-input interrupt/redirect) appends the new
++      // user bubble to the SETTLED transcript while the old turn's tool
++      // trail is still buffered in the live streaming area. If the trail
++      // flushed after the bubble (at the redirected turn's message.complete)
++      // it would render BELOW the message that chronologically followed it.
++      // Settle the old turn's observed trail into the transcript FIRST so
++      // the bubble lands after it; idle submits settle nothing.
++      turnController.checkpointBeforeUserBubble().forEach(deps.appendMessage)
+       deps.appendMessage({ role: 'user', text: displayOverride || displayText })
+     }
+ 
+diff --git a/ui-tui/src/app/tpsStore.ts b/ui-tui/src/app/tpsStore.ts
+new file mode 100644
+index 0000000000..ce10b71b81
+--- /dev/null
++++ b/ui-tui/src/app/tpsStore.ts
+@@ -0,0 +1,36 @@
++import { atom } from 'nanostores'
++
++import { createTpsTracker, type TpsTracker } from '../lib/tps.js'
++
++/**
++ * Status-bar TPS meter state.
++ *
++ * A module-level singleton is enough: the TUI drives one active session at a
++ * time, and the gateway event handler resets the tracker whenever a
++ * `message.delta` or `message.throughput` arrives for a different session_id. The atom holds the
++ * EMA-smoothed target; the animated readout (TpsMeter in appChrome) eases
++ * toward it so the number rolls evenly instead of snapping between samples.
++ */
++const tracker: TpsTracker = createTpsTracker()
++
++export const $tpsTarget = atom(0)
++
++/** Feed streamed assistant text (chars). `now` is injectable for tests. */
++export const feedTpsChars = (chars: number, now: number = Date.now()): void => {
++  if (chars <= 0) {
++    return
++  }
++
++  tracker.sample(chars, now)
++  const value = tracker.read()
++
++  if (value !== $tpsTarget.get()) {
++    $tpsTarget.set(value)
++  }
++}
++
++/** Reset all measurement state (session switch). */
++export const resetTps = (): void => {
++  tracker.reset()
++  $tpsTarget.set(0)
++}
+diff --git a/ui-tui/src/app/turnController.ts b/ui-tui/src/app/turnController.ts
+index b81ae4d154..2becd3b1fb 100644
+--- a/ui-tui/src/app/turnController.ts
++++ b/ui-tui/src/app/turnController.ts
+@@ -136,7 +136,7 @@ class TurnController {
+ 
+   // ── Credits notice machinery (Strategy B) ───────────────────────────
+   //
+-  // A notice arriving mid-turn must NOT show (FaceTicker wins while busy);
++  // A notice arriving mid-turn must NOT show (the busy indicator wins while busy);
+   // it is held here, latest-wins, and applied at turn end via onTurnEnd().
+   // The TTL clock starts only when the notice becomes VISIBLE (on apply),
+   // never on arrival, so an 8s "restored" notice shows for its full life.
+@@ -173,7 +173,7 @@ class TurnController {
+   // ── Notice: arrival ──────────────────────────────────────────────────
+   //
+   // A `notification.show` arrived. If a turn is in flight (`busy`), the
+-  // FaceTicker owns the verb slot, so we hold the notice (latest-wins) and
++  // The busy indicator owns the status slot, so we hold the notice (latest-wins) and
+   // let onTurnEnd() apply it when the turn finishes. If idle, apply it now.
+   // The Python side emits STABLE ids per notice kind (e.g. `credits.warn90`,
+   // `credits.restored`), NOT unique-per-emission ids.  The id-guard in
+@@ -240,7 +240,7 @@ class TurnController {
+   // Invoked ONLY by the three real turn-end sites (recordMessageComplete,
+   // interruptTurn, recordError) — NEVER by idle()/reset(), which would leak
+   // session A's notice into session B. Applies a pending NEW notice so it
+-  // appears now that FaceTicker has yielded; the TTL clock starts here, when
++  // appears now that the busy indicator has yielded; the TTL clock starts here, when
+   // the notice first becomes visible. With no pending notice this is a
+   // no-op, so a standing sticky notice REappears untouched after the turn.
+   private flushPendingNotice() {
+@@ -675,6 +675,49 @@ class TurnController {
+     return { finalMessages, finalText, wasInterrupted }
+   }
+ 
++  /**
++   * Settle the current turn's already-observed work into transcript
++   * messages WITHOUT ending the turn. The mid-turn-correction path
++   * (busy-input interrupt/redirect — `submitPrompt` while a turn is live)
++   * appends the new user bubble to the settled transcript BEFORE the
++   * redirected turn's ``message.complete`` flushes its buffered trail, so
++   * the old turn's tool lines would otherwise land BELOW the user message
++   * that chronologically followed them.
++   *
++   * This drains streaming text + the pending completed-tool shelf into a
++   * final segment, returns the accumulated settled segment list for the
++   * caller to append BEFORE the user bubble, and clears the finalized
++   * buffer so the redirected turn's ``message.complete`` only appends what
++   * happens AFTER the interjection. Genuinely active tools stay live —
++   * their start/progress keeps rendering and their completion lands below
++   * the bubble, which is where it belongs. Idle submits (empty buffer)
++   * settle nothing and return [].
++   */
++  checkpointBeforeUserBubble(): Msg[] {
++    if (this.interrupted) {
++      // interruptTurn() already flushed segments to the transcript.
++      return []
++    }
++
++    // Fold open reasoning + buffered streaming text + completed tool lines
++    // into sealed segments (flushStreamingSegment pushes a trail segment
++    // whenever there is streamed text or a pending tool shelf).
++    this.closeReasoningSegment()
++    this.flushStreamingSegment()
++
++    const settled = this.segmentMessages
++
++    if (settled.length === 0) {
++      return []
++    }
++
++    this.segmentMessages = []
++    this.interimBoundaryIndex = null
++    patchTurnState({ streamSegments: [], streamPendingTools: [] })
++
++    return settled
++  }
++
+   recordMessageDelta({ text }: { rendered?: string; text?: string }) {
+     if (this.interrupted || !text) {
+       return
+diff --git a/ui-tui/src/app/useMainApp.ts b/ui-tui/src/app/useMainApp.ts
+index 00eeab2ec1..09d8c62979 100644
+--- a/ui-tui/src/app/useMainApp.ts
++++ b/ui-tui/src/app/useMainApp.ts
+@@ -34,6 +34,7 @@ import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.j
+ import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+ import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
+ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
++import { durableExitSessionId, rememberExitSessionId } from '../lib/sessionExit.js'
+ import { terminalParityHints } from '../lib/terminalParity.js'
+ import {
+   buildToolTrailLine,
+@@ -522,8 +523,22 @@ export function useMainApp(gw: GatewayClient) {
+   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
+ 
+   const die = useCallback(() => {
++    const ui = getUiState()
++    // Only the durable stored_session_id is a valid resume handle. It is
++    // seeded into info at session.create (before the agent build finishes)
++    // and refreshed by the session.info event once that lands. The UI `sid`
++    // is an internal 8-hex gateway key — never printable as a resume handle;
++    // if the durable id is absent, stay silent rather than printing a
++    // known-invalid `hermes --resume` line.
++    const exitSid = durableExitSessionId(ui.info?.stored_session_id)
+     gw.kill('app.die')
+     exit()
++    // Remember the resumable id; entry.tsx's process.on('exit') handler resets
++    // terminal modes (leaving the alternate screen) and then flushes this line,
++    // so it lands on the restored normal screen instead of being wiped by the
++    // \x1b[?1049l alt-screen exit that runs after this function returns.
++    rememberExitSessionId(exitSid)
++
+     // Ink's exit() calls unmount() which resets terminal modes but does NOT
+     // call process.exit().  Without an explicit exit the Node process stays
+     // alive (stdin listener keeps the event loop open), so the process.on('exit')
+@@ -1252,7 +1267,9 @@ export function useMainApp(gw: GatewayClient) {
+         ? '● REC'
+         : voiceProcessing
+           ? '◉ STT'
+-          : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
++          : voiceEnabled
++            ? `voice on${voiceTts ? ' [tts]' : ''}`
++            : ''
+     }),
+     [
+       cwd,
+diff --git a/ui-tui/src/app/useSessionLifecycle.ts b/ui-tui/src/app/useSessionLifecycle.ts
+index cc6d29d162..4930de8590 100644
+--- a/ui-tui/src/app/useSessionLifecycle.ts
++++ b/ui-tui/src/app/useSessionLifecycle.ts
+@@ -208,7 +208,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
+         return null
+       }
+ 
+-      const info = r.info ?? null
++      // Seed the durable resume handle into info immediately: the deferred
++      // session.info event (which also carries stored_session_id) only lands
++      // after the agent build, and exits before that must still print a valid
++      // `hermes --resume` line.
++      const info = r.info ? { ...r.info, stored_session_id: r.stored_session_id } : null
+       const requestedTitle = title?.trim() ?? ''
+ 
+       resetSession()
+diff --git a/ui-tui/src/app/wavePulseStore.ts b/ui-tui/src/app/wavePulseStore.ts
+new file mode 100644
+index 0000000000..6f960d3fc5
+--- /dev/null
++++ b/ui-tui/src/app/wavePulseStore.ts
+@@ -0,0 +1,19 @@
++import { atom } from 'nanostores'
++
++/**
++ * Status-line water wave pulse state.
++ *
++ * Every `tool.start` gateway event bumps the counter; the status-rule
++ * WaterTicker subscribes and plays exactly one splash pulse per bump.
++ *
++ * Keeping the trigger in its own store decouples the wave from token
++ * throughput: a tool call start overwrites the TPS sample, which used to make
++ * the TPS-driven wave cadence jump mid-call. The wave now answers only to
++ * tool activity, and the TPS meter keeps its own independent readout.
++ */
++export const $wavePulse = atom(0)
++
++/** Signal one tool-call splash (`tool.start`). */
++export const pulseWave = (): void => {
++  $wavePulse.set($wavePulse.get() + 1)
++}
+diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
+index 708391eea6..f146737650 100644
+--- a/ui-tui/src/components/appChrome.tsx
++++ b/ui-tui/src/components/appChrome.tsx
+@@ -1,101 +1,27 @@
+ import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
+ import { useStore } from '@nanostores/react'
+ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
+-import unicodeSpinners from 'unicode-animations'
+ 
+ import { $delegationState } from '../app/delegationStore.js'
+-import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
++import type { BatteryInfo, Notice } from '../app/interfaces.js'
+ import { $isStatusRuleOccluded } from '../app/overlayStore.js'
++import { $tpsTarget } from '../app/tpsStore.js'
+ import { useTurnSelector } from '../app/turnStore.js'
++import { $wavePulse } from '../app/wavePulseStore.js'
+ import { DEV_CREDITS_MODE } from '../config/env.js'
+-import { FACES } from '../content/faces.js'
+-import { VERBS } from '../content/verbs.js'
+ import { fmtDuration } from '../domain/messages.js'
+ import { stickyPromptFromViewport } from '../domain/viewport.js'
+ import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
+ import { fmtK } from '../lib/text.js'
++import { formatTps } from '../lib/tps.js'
+ import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
+ import type { Theme } from '../theme.js'
+ import type { Msg, Usage } from '../types.js'
+ 
+ import { scrollbarColors } from './overlayPrimitives.js'
+ 
+-const FACE_TICK_MS = 2500
+ const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
+ 
+-// Keep verb segment width stable so status-bar content to the right doesn't
+-// jitter when the ticker rotates between short/long verbs.
+-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
+-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+-
+-// Compact alternates for the `emoji` and `ascii` indicator styles.
+-// Each entry is a fixed-width (display-width) glyph.
+-const EMOJI_FRAMES = ['⚕ ', '🌀', '🤔', '✨', '🍵', '🔮']
+-const ASCII_FRAMES = ['|', '/', '-', '\\']
+-
+-// Faster tick for spinner-style indicators — they read as motion only
+-// at frame rates closer to their authored interval.
+-const SPINNER_TICK_MS = 100
+-
+-interface IndicatorRender {
+-  frame: string
+-  intervalMs: number
+-  // When false, FaceTicker hides the rotating verb and just shows the
+-  // glyph + duration.  Lets `unicode` stay minimal while the other
+-  // styles keep the verb-rotation flavour users associate with the
+-  // running… status.
+-  showVerb: boolean
+-}
+-
+-const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
+-  if (style === 'kaomoji') {
+-    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
+-  }
+-
+-  if (style === 'emoji') {
+-    return {
+-      frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '⚕ ',
+-      intervalMs: SPINNER_TICK_MS * 6,
+-      showVerb: true
+-    }
+-  }
+-
+-  if (style === 'ascii') {
+-    return {
+-      frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|',
+-      intervalMs: SPINNER_TICK_MS,
+-      showVerb: true
+-    }
+-  }
+-
+-  // 'unicode' — braille spinner (fixed 1-col).  Authored interval is
+-  // ~80ms; honour it but bound below at a safe minimum so React
+-  // re-renders stay reasonable.  This style is for users who want
+-  // the cleanest possible status, so no verb rotation either.
+-  const spinner = unicodeSpinners.braille
+-  const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
+-
+-  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
+-}
+-
+-// `FACES` / `EMOJI_FRAMES` are static, so measure their widest glyph once at
+-// module load instead of rescanning on every status render.
+-const KAOMOJI_FRAME_WIDTH = FACES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+-const EMOJI_FRAME_WIDTH = EMOJI_FRAMES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+-
+-const indicatorFrameWidth = (style: IndicatorStyle): number => {
+-  if (style === 'kaomoji') {
+-    return KAOMOJI_FRAME_WIDTH
+-  }
+-
+-  if (style === 'emoji') {
+-    return EMOJI_FRAME_WIDTH
+-  }
+-
+-  // 'ascii' and 'unicode' are single-column glyphs.
+-  return 1
+-}
+-
+ // Bounded width of the elapsed-time clock, derived from `fmtDuration` itself so
+ // the reservation/budget stays consistent with what actually renders (it emits
+ // a space between units, e.g. `59m 59s` / `99h 59m`). Durations beyond this
+@@ -105,104 +31,6 @@ export const MAX_DURATION_WIDTH = Math.max(
+   stringWidth(fmtDuration(99 * 3_600_000 + 59 * 60_000)) // "99h 59m"
+ )
+ 
+-// Display width to reserve for the busy indicator so its verb + elapsed-time
+-// tail can't shove the model off-screen on narrow terminals. Style-aware:
+-// `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
+-// ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
+-// Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
+-export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
+-  const { showVerb } = renderIndicator(style, 0)
+-  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
+-  // ` · ` plus the bounded clock (e.g. `59m 59s`).
+-  const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
+-
+-  return indicatorFrameWidth(style) + verb + duration
+-}
+-
+-function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
+-  const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
+-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+-  const [now, setNow] = useState(() => Date.now())
+-  const isOccluded = useStore($isStatusRuleOccluded)
+-
+-  // Pre-compute cadence + verb-visibility for the active style so an
+-  // `/indicator` switch re-arms the interval (and skips the verb timer
+-  // for verb-less styles like `unicode`) without leaving the previous
+-  // timer dangling.
+-  const { intervalMs, showVerb } = renderIndicator(style, 0)
+-
+-  useEffect(() => {
+-    // An overlay is painted OVER the status rule (the modal widget slot, or a
+-    // floating panel growing up over the top rule), so every tick below is a
+-    // re-render nobody can see — in an Ink TUI that churn reads as the dialog
+-    // tearing.  Arm nothing while occluded.  The effect re-runs when the rule
+-    // is revealed again and re-seeds `now` from the wall clock, so the elapsed
+-    // read-out resumes live rather than frozen at the moment it was covered.
+-    // See `$isStatusRuleOccluded` for why this is NOT `$isBlocked`.
+-    if (isOccluded) {
+-      return
+-    }
+-
+-    setNow(Date.now())
+-
+-    const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
+-    const clock = setInterval(() => setNow(Date.now()), 1000)
+-    // Verb timer is gated on `showVerb` — `unicode` style hides the verb
+-    // entirely, so cycling `verbTick` would be an avoidable re-render.
+-    const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
+-
+-    return () => {
+-      clearInterval(glyph)
+-      clearInterval(clock)
+-
+-      if (verb !== null) {
+-        clearInterval(verb)
+-      }
+-    }
+-  }, [intervalMs, isOccluded, showVerb])
+-
+-  const { frame } = renderIndicator(style, tick)
+-  const verb = VERBS[verbTick % VERBS.length] ?? ''
+-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+-  // Leading space keeps a gap between the frame and the duration when the
+-  // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
+-  // IS shown, its trailing padding already provides the gap, so the extra
+-  // space is harmless.
+-  const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
+-
+-  return (
+-    <Text color={color}>
+-      {frame}
+-      {verbSegment}
+-      {durationSegment}
+-    </Text>
+-  )
+-}
+-
+-function ctxBarColor(pct: number | undefined, t: Theme) {
+-  if (pct == null) {
+-    return t.color.muted
+-  }
+-
+-  if (pct >= 95) {
+-    return t.color.statusCritical
+-  }
+-
+-  if (pct > 80) {
+-    return t.color.statusBad
+-  }
+-
+-  if (pct >= 50) {
+-    return t.color.statusWarn
+-  }
+-
+-  return t.color.statusGood
+-}
+-
+-function statusSessionCountLabel(count: number) {
+-  return `${count} ${count === 1 ? 'session' : 'sessions'}`
+-}
+-
+ // Colour the battery read-out by its (Python-computed) category. Inverted vs
+ // the context bar — a full battery is "good", an empty one "critical".
+ function batteryColor(info: BatteryInfo, t: Theme): string {
+@@ -251,50 +79,18 @@ function noticeColor(level: Notice['level'], t: Theme): string {
+   return t.color.accent
+ }
+ 
+-function ctxBar(pct: number | undefined, w = 10) {
+-  const p = Math.max(0, Math.min(100, pct ?? 0))
+-  const filled = Math.round((p / 100) * w)
+-
+-  return '█'.repeat(filled) + '░'.repeat(w - filled)
+-}
+-
+-// `minLeftContent` is the display width of the high-priority left segments
+-// (status indicator + model + context). Reserving it makes the cwd/branch
+-// segment on the right yield FIRST on narrow terminals, instead of squeezing
+-// the loading indicator and model down to nothing.
+-export function statusRuleWidths(cols: number, cwdLabel: string, minLeftContent = 0) {
+-  const width = Math.max(1, Math.floor(cols || 1))
+-  const desiredSeparatorWidth = width >= 24 ? 3 : 1
+-  const baseMinLeft = width >= 24 ? 8 : 1
+-  // Never reserve more than the terminal width; never less than the historical
+-  // floor. With the default `minLeftContent = 0` this is identical to the old
+-  // behaviour, so callers that don't pass content are unaffected.
+-  const minLeftWidth = Math.min(width, Math.max(baseMinLeft, Math.floor(minLeftContent)))
+-  const maxRightWidth = Math.max(0, width - desiredSeparatorWidth - minLeftWidth)
+-
+-  if (!cwdLabel || maxRightWidth <= 0) {
+-    return { leftWidth: width, rightWidth: 0, separatorWidth: 0 }
+-  }
+-
+-  const rightWidth = Math.max(0, Math.min(stringWidth(cwdLabel), maxRightWidth))
+-  const separatorWidth = rightWidth > 0 ? desiredSeparatorWidth : 0
+-  const leftWidth = Math.max(1, width - separatorWidth - rightWidth)
+-
+-  return { leftWidth, rightWidth, separatorWidth }
+-}
+-
+ // Progressive disclosure for the status rule's lower-priority tail segments.
+ // As the terminal narrows we shed the least important pieces first (cost →
+-// bg → voice → compressions → duration → context bar), and below the bar
++// bg → voice → compressions → duration → context), and below the context
+ // breakpoint the context read-out collapses to a bare token count. Status and
+-// model are never gated here — they're guaranteed room by `statusRuleWidths`.
++// model are never gated here — they're guaranteed room by the row budget.
+ export interface StatusBarSegments {
+-  bar: boolean
+   bg: boolean
+   compactCtx: boolean
+   compressions: boolean
+   duration: boolean
+   subagents: boolean
++  tps: boolean
+   voice: boolean
+ }
+ 
+@@ -303,8 +99,10 @@ export function statusBarSegments(cols: number): StatusBarSegments {
+ 
+   return {
+     compactCtx: w < 72,
+-    bar: w >= 72,
+     duration: w >= 76,
++    // Shares the duration breakpoint: the TPS readout tail sheds together
++    // with the duration segment, before the context read-out.
++    tps: w >= 76,
+     compressions: w >= 80,
+     voice: w >= 84,
+     bg: w >= 88,
+@@ -379,7 +177,8 @@ function SessionDuration({ startedAt }: { startedAt: number }) {
+ 
+   useEffect(() => {
+     // Paused only while an overlay actually covers the status rule — see
+-    // FaceTicker.  The `setNow` below already re-seeds from the wall clock
++    // `$isStatusRuleOccluded` for why this is NOT `$isBlocked`.  The `setNow`
++    // below already re-seeds from the wall clock
+     // on every re-arm, so it doubles as the reveal catch-up.
+     if (isOccluded) {
+       return
+@@ -402,7 +201,8 @@ function IdleSince({ endedAt }: { endedAt: number }) {
+ 
+   useEffect(() => {
+     // Paused only while an overlay actually covers the status rule — see
+-    // FaceTicker.  The `setNow` below re-seeds from the wall clock on reveal
++    // `$isStatusRuleOccluded` for why this is NOT `$isBlocked`.  The `setNow`
++    // below re-seeds from the wall clock on reveal
+     // so the idle read-out is not frozen when the overlay closes.
+     if (isOccluded) {
+       return
+@@ -438,6 +238,435 @@ const shortModelLabel = (model: string) =>
+ const modelLabel = (model: string, effort?: string, fast?: boolean) =>
+   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+ 
++// A full Braille water body is always exactly 25 terminal cells wide. Keeping
++// it mounted while idle lets the frozen drift frame stay in place instead of
++// replacing the indicator with a shorter "ready" label that shifts the model
++// and context readout.
++export const WATER_CELL_COUNT = 25
++// All non-wave status metrics (separators, provider·model, bg count, context,
++// TPS) share ONE fixed pale gray so the row stays legible on both light and
++// dark terminals — theme-independent. Tune this single hex to taste.
++// Muted gray for the whole status rule (wave base, separators, model,
++// context, TPS). Darkened from #AEB4BA after dogfood: the old gray read
++// brighter than "muted" against the dark strip.
++const STATUS_METRIC_GRAY = '#6B7280'
++// 16 FPS is quick enough to read as fluid in Ink while staying well below a
++// terminal-wide 60 FPS repaint loop. The splash clock steps at this fixed
++// physics cadence regardless of token throughput.
++export const WATER_FRAME_MS = 60
++
++// Keep Ink on one stable repaint cadence. TPS changes phase velocity instead
++// of tearing down and re-arming the interval whenever the EMA moves. The wave
++// advances at an effective 30ms/frame at zero TPS and 20ms/frame from 15 t/s
++// upward, expressed as fractional frames on the 60ms clock.
++export const waterFrameStep = (tps: number): number => {
++  const clampedTps = Math.min(Math.max(tps, 0), 15)
++
++  return WATER_FRAME_MS / (30 - (clampedTps * 2) / 3)
++}
++
++// A seeded, correlated field gives each impact a slightly different texture
++// without independent per-pixel noise.
++const PEAK_MIN = 1.0
++const PEAK_MAX = 3.6
++
++export const WATER_SPLASH_MS = 900
++
++export const splashClockAt = (startedAt: number, now: number): number => {
++  const elapsed = Math.max(0, now - startedAt)
++
++  return elapsed >= WATER_SPLASH_MS ? -1 : elapsed
++}
++
++const seededUnit = (seed: number): (() => number) => {
++  let state = seed | 0
++
++  return () => {
++    state = (state + 0x6d2b79f5) | 0
++    let value = state
++    value = Math.imul(value ^ (value >>> 15), value | 1)
++    value ^= value + Math.imul(value ^ (value >>> 7), value | 61)
++
++    return ((value ^ (value >>> 14)) >>> 0) / 4294967296
++  }
++}
++
++/**
++ * Deterministic, spatially correlated droplet peaks. Sparse seeded control
++ * points are interpolated across the raster, so each tool pulse is irregular
++ * without making neighboring Braille columns flicker independently.
++ */
++export const freshWavePeaks = (
++  count: number = WATER_CELL_COUNT * 2,
++  seed = 0
++): number[] => {
++  if (count <= 0) {
++    return []
++  }
++
++  const random = seededUnit(seed)
++  const controlSpan = 6
++
++  const controls = Array.from(
++    { length: Math.ceil((count - 1) / controlSpan) + 1 },
++    () => PEAK_MIN + (PEAK_MAX - PEAK_MIN) * Math.pow(random(), 2)
++  )
++
++  return Array.from({ length: count }, (_, pixel) => {
++    const control = pixel / controlSpan
++    const left = Math.floor(control)
++    const mix = control - left
++    const start = controls[left] ?? PEAK_MIN
++    const end = controls[left + 1] ?? start
++    const easedMix = mix * mix * (3 - 2 * mix)
++
++    return start + (end - start) * easedMix
++  })
++}
++
++
++const BRAILLE_DOTS = [
++  [0x01, 0x08],
++  [0x02, 0x10],
++  [0x04, 0x20],
++  [0x40, 0x80]
++] as const
++
++// The base surface: the classic drifting wave (row 0 = full cell, row 4 =
++// dry). Pure in `frame`, so the drift is deterministic and phase-continuous
++// across turns — the frame counter never resets.
++//
++// Keep the proven 2.4 baseline and monochrome color. A fifth-power negative
++// lobe adds a narrow needle only at the fundamental's crest; broad shoulders
++// and positive troughs stay where they were, avoiding full-height plateaus.
++export const pointedCrestOffset = (fundamental: number): number =>
++  fundamental < 0 ? -0.25 * Math.pow(-fundamental, 5) : 0
++
++const driftSurface = (pixel: number, pixelCount: number, frame: number): number => {
++  const x = pixel / (pixelCount - 1)
++  const phase = frame * 0.105
++  const theta = x * Math.PI * 2 * 1.25 + phase
++  const fundamental = Math.sin(theta)
++  const source = 0.52 + 0.18 * Math.sin(phase * 0.31)
++  const distance = Math.abs(x - source)
++
++  return (
++    2.4 +
++    0.9 * fundamental +
++    pointedCrestOffset(fundamental) +
++    0.45 * Math.sin(x * Math.PI * 2 * 3.7 - phase * 0.73) +
++    // Third harmonic phase-locked to the fundamental: lifts the crest into a
++    // pointed spike (and pushes the trough down) instead of a flat-topped
++    // mesa — the peak rounds to the top row only where the crest actually
++    // breaks, so the wave reads as sharp whitecaps, not a plateau.
++    0.5 * Math.sin(3 * theta - Math.PI) +
++    0.85 * Math.sin(distance * 30 - phase * 2.1) * Math.exp(-distance * 5.5)
++  )
++}
++
++export interface WaterSplash {
++  peaks: readonly number[]
++  /** Horizontal impact point in Braille sub-pixels. Defaults to the center. */
++  origin?: number
++  /** Elapsed splash time in ms; the wake is settled at WATER_SPLASH_MS. */
++  clock: number
++}
++
++/**
++ * Lift contributed by a localized impact and its two outward-travelling wakes.
++ * The envelope is exactly zero at both ends so a completed splash returns to
++ * the unmodified drifting surface without a residual tremor.
++ */
++export const waterSplashLift = (
++  pixel: number,
++  pixelCount: number,
++  splash: WaterSplash
++): number => {
++  if (splash.clock <= 0 || splash.clock >= WATER_SPLASH_MS || pixelCount <= 0) {
++    return 0
++  }
++
++  const progress = splash.clock / WATER_SPLASH_MS
++  const origin = splash.origin ?? (pixelCount - 1) / 2
++  const distance = Math.abs(pixel - origin)
++  const peak = splash.peaks[pixel] ?? PEAK_MIN
++  const texture = 0.82 + 0.18 * Math.max(0, Math.min(1, (peak - PEAK_MIN) / (PEAK_MAX - PEAK_MIN)))
++
++  // A narrow initial crown rises and damps quickly at the point of impact.
++  const impactRise = Math.sin(Math.PI * Math.min(1, splash.clock / 360))
++
++  const impact =
++    3 * impactRise * Math.exp(-3.2 * progress) * Math.exp(-(distance * distance) / (2 * 2.4 * 2.4))
++
++  // The displaced energy becomes a pair of broad fronts moving left/right.
++  const front = progress * pixelCount * 0.58
++  const frontDistance = distance - front
++
++  const wake =
++    2.2 *
++    Math.sin(Math.PI * progress) *
++    Math.exp(-(frontDistance * frontDistance) / (2 * 2.2 * 2.2))
++
++  return (impact + wake) * texture
++}
++
++const WATER_ROW_DEADBAND = 0.15
++
++export const quantizeWaterHeight = (height: number, previous?: number): number => {
++  const clamped = Math.max(0, Math.min(4, height))
++  const nearest = Math.round(clamped)
++
++  if (previous === undefined) {
++    return nearest
++  }
++
++  const stable = Math.max(0, Math.min(4, Math.round(previous)))
++
++  if (nearest > stable && clamped < stable + 0.5 + WATER_ROW_DEADBAND) {
++    return stable
++  }
++
++  if (nearest < stable && clamped > stable - 0.5 - WATER_ROW_DEADBAND) {
++    return stable
++  }
++
++  return nearest
++}
++
++export const waterSurface = (
++  frame: number,
++  splash?: WaterSplash,
++  previous: readonly number[] = [],
++  cellCount: number = WATER_CELL_COUNT
++): number[] => {
++  const pixelCount = cellCount * 2
++  // A settled impact is an exact physics boundary: discard hysteresis history
++  // so the final glyphs cannot retain a stale lifted row while idle.
++  const stablePrevious = splash && splash.clock >= WATER_SPLASH_MS ? [] : previous
++  const surface: number[] = []
++
++  for (let pixel = 0; pixel < pixelCount; pixel += 1) {
++    let height = driftSurface(pixel, pixelCount, frame)
++
++    if (splash) {
++      height -= waterSplashLift(pixel, pixelCount, splash)
++    }
++
++    // Row 4 leaves both dot columns empty. The previous row adds a narrow
++    // deadband around half-row thresholds, suppressing one-frame glyph pops.
++    surface.push(quantizeWaterHeight(height, stablePrevious[pixel]))
++  }
++
++  return surface
++}
++
++const waterFrameFromSurface = (surface: readonly number[], cellCount: number = WATER_CELL_COUNT): string =>
++  Array.from({ length: cellCount }, (_, cell) => {
++    const left = surface[cell * 2] ?? 4
++    const right = surface[cell * 2 + 1] ?? 4
++    let dots = 0
++
++    for (let column = 0; column < 2; column += 1) {
++      const fillFrom = column === 0 ? left : right
++
++      for (let row = fillFrom; row < 4; row += 1) {
++        dots |= BRAILLE_DOTS[row]![column]!
++      }
++    }
++
++    return String.fromCodePoint(0x2800 + dots)
++  })
++    .join('')
++
++export const waterFrame = (
++  frame: number,
++  splash?: WaterSplash,
++  previous?: readonly number[],
++  cellCount: number = WATER_CELL_COUNT
++): string => waterFrameFromSurface(waterSurface(frame, splash, previous, cellCount), cellCount)
++
++// The wave shrinks on narrow terminals instead of crushing the segments that
++// share its strip: full 25-cell body above 130 cols, 18 above 108, 12 above
++// 88 (the bar breakpoint), and a compact 6-cell readout below that — so the
++// downstream tail segments (TPS, subagents, resume hint) keep their budget.
++export const waterCellCount = (cols: number): number => {
++  const width = Math.max(1, Math.floor(cols || 1))
++
++  if (width >= 130) {
++    return WATER_CELL_COUNT
++  }
++
++  if (width >= 108) {
++    return 18
++  }
++
++  if (width >= 88) {
++    return 12
++  }
++
++  return 6
++}
++
++// The wave renders in the SAME muted gray as the rest of the status rule —
++// no accent color at all (user: "giữ màu đều đi, cùng màu với statusline").
++// The spikiness of the drift is pure silhouette now: tall crest cells read
++// as dark braille mass against the empty row above them.
++const WAVE_COLOR = STATUS_METRIC_GRAY
++
++function WaterTicker({ busy, cells }: { busy: boolean; cells: number }) {
++  // One stable 60ms clock drives a TPS-scaled phase while busy. Every
++  // `tool.start` seeds a localized impact and two travelling wakes. Between
++  // turns the drift freezes on its last frame; the status rule stays mounted
++  // so model/context columns never shift.
++  const pulse = useStore($wavePulse)
++  const tps = useStore($tpsTarget)
++  const [driftFrame, setDriftFrame] = useState(0)
++  const [peaks, setPeaks] = useState<number[]>(() => freshWavePeaks(cells * 2))
++  const [origin, setOrigin] = useState((cells * 2 - 1) / 2)
++  // -1 = no splash in flight.
++  const [splashClock, setSplashClock] = useState(-1)
++  const frameStepRef = useRef(waterFrameStep(tps))
++  const busyRef = useRef(busy)
++  // cells only re-seeds peaks on a real pulse; a resize must not replay the
++  // splash, so the pulse effect reads the live value through a ref.
++  const cellsRef = useRef(cells)
++  const splashStartedAtRef = useRef<number | null>(null)
++  const previousSurfaceRef = useRef<number[]>([])
++  const lastSplashClockRef = useRef(-1)
++  const splashActive = splashClock >= 0
++  const animationActive = busy || splashActive
++
++  // Timer callbacks only consume committed render state. Keeping these writes
++  // in effects avoids leaking values from a React render that gets discarded.
++  useEffect(() => {
++    frameStepRef.current = waterFrameStep(tps)
++  }, [tps])
++
++  useEffect(() => {
++    busyRef.current = busy
++  }, [busy])
++
++  useEffect(() => {
++    cellsRef.current = cells
++  }, [cells])
++
++  // New tool call → a repeatable impact origin + correlated texture.
++  useEffect(() => {
++    if (pulse <= 0) {
++      return
++    }
++
++    const random = seededUnit(pulse)
++    const pixelCount = cellsRef.current * 2
++    setPeaks(freshWavePeaks(pixelCount, pulse))
++    setOrigin(Math.round((0.2 + 0.6 * random()) * (pixelCount - 1)))
++    splashStartedAtRef.current = Date.now()
++    setSplashClock(0)
++  }, [pulse])
++
++  // One interval owns both drift and impact updates. Starting/retriggering a
++  // splash while busy does not re-arm it; wall time gives every impact its full
++  // lifetime regardless of where it lands inside the current 60ms cadence.
++  useEffect(() => {
++    if (!animationActive) {
++      return
++    }
++
++    const id = setInterval(() => {
++      if (busyRef.current) {
++        setDriftFrame(current => current + frameStepRef.current)
++      }
++
++      const startedAt = splashStartedAtRef.current
++
++      if (startedAt !== null) {
++        const nextClock = splashClockAt(startedAt, Date.now())
++
++        if (nextClock < 0) {
++          splashStartedAtRef.current = null
++        }
++
++        setSplashClock(nextClock)
++      }
++    }, WATER_FRAME_MS)
++
++    return () => clearInterval(id)
++  }, [animationActive])
++
++  // The first no-splash render after a completed wake must discard hysteresis
++  // history so an idle frame cannot retain a lifted Braille row.
++  const justSettled = !splashActive && lastSplashClockRef.current >= 0
++
++  const surface = waterSurface(
++    driftFrame,
++    splashActive ? { clock: splashClock, origin, peaks } : undefined,
++    justSettled ? [] : previousSurfaceRef.current,
++    cells
++  )
++
++  // Commit the hysteresis history after render. Mutating the ref during render
++  // would make React Strict Mode's repeated render observe a different input.
++  useEffect(() => {
++    previousSurfaceRef.current = surface
++    lastSplashClockRef.current = splashClock
++  }, [splashClock, surface])
++
++  return <Text color={WAVE_COLOR}>{waterFrameFromSurface(surface, cells)}</Text>
++}
++
++// TPS meter cadence + ease. The eased roll toward the EMA target is what
++// makes the number "run evenly" (pi-agent-flow's value-flash idea, minus the
++// character scramble — a rolling numeric readout fits the status bar cleaner
++// than a glyph glitch). Ticks only while the value is moving; once settled
++// the interval is cleared so an idle status bar never repaints on its own.
++const TPS_TICK_MS = 120
++const TPS_EASE = 0.4
++
++// Terminal width below which the ` · N.N t/s` segment is dropped (shares the
++// duration breakpoint — the readout tail sheds before the context bar).
++export const TPS_MIN_COLS = 76
++
++function TpsMeter({ show }: { show: boolean }) {
++  const target = useStore($tpsTarget)
++  const [display, setDisplay] = useState(0)
++  const displayRef = useRef(0)
++
++  useEffect(() => {
++    if (!show || target <= 0) {
++      displayRef.current = 0
++      setDisplay(0)
++
++      return
++    }
++
++    const id = setInterval(() => {
++      const current = displayRef.current
++      const next = current + (target - current) * TPS_EASE
++
++      if (Math.abs(target - next) < 0.05) {
++        displayRef.current = target
++        setDisplay(target)
++        clearInterval(id)
++      } else {
++        displayRef.current = next
++        setDisplay(next)
++      }
++    }, TPS_TICK_MS)
++
++    return () => clearInterval(id)
++  }, [show, target])
++
++  if (!show) {
++    return null
++  }
++
++  // TPS stays in the shared light metric gray in every state — the wave is
++  // the only colored element of the strip.
++  const shown = display > 0 ? display : target
++
++  return <Text color={STATUS_METRIC_GRAY}>{` · ${formatTps(shown)}`}</Text>
++}
++
+ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
+   const [active, setActive] = useState(false)
+   const [color, setColor] = useState(t.color.accent)
+@@ -466,42 +695,39 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
+ export function StatusRule({
+   battery,
+   focusView,
+-  cwdLabel,
+   cols,
+   busy,
+-  status,
+   statusColor,
+   model,
+   modelFast,
+   modelReasoningEffort,
+-  indicatorStyle = 'kaomoji',
+   notice,
+   usage,
+   bgCount,
+   lastTurnEndedAt,
+-  liveSessionCount,
+-  sessionTitle,
+   sessionStartedAt,
+-  turnStartedAt,
+   voiceLabel,
+-  onSessionCountClick,
+   t
+ }: StatusRuleProps) {
+-  const pct = usage.context_percent
+-  const barColor = ctxBarColor(pct, t)
+   const segs = statusBarSegments(cols)
++  const waterCells = waterCellCount(cols)
+ 
+   // On narrow terminals the context read-out collapses to a bare token count
+-  // (`12k tok`) and the visual fill bar is dropped entirely.
++  // (`12k tok`).
++  //
++  // When context_used is ABSENT the occupancy is genuinely UNKNOWN (fresh
++  // session before the first turn, or a resumed session before its next
++  // turn — last_prompt_tokens is only populated by a real prompt, and the
++  // gateway intentionally omits the gauge). Never fabricate "0" there: a
++  // resumed session with history would lie as 0/666k.
+   const ctxLabel = usage.context_max
+     ? segs.compactCtx
++      ? `${usage.context_used != null ? `${fmtK(usage.context_used)} tok` : '– tok'}`
++      : `${usage.context_used != null ? fmtK(usage.context_used) : '–'}/${fmtK(usage.context_max)}`
++    : (usage.context_used ?? 0) > 0
+       ? `${fmtK(usage.context_used ?? 0)} tok`
+-      : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+-    : usage.total > 0
+-      ? `${fmtK(usage.total)} tok`
+       : ''
+ 
+-  const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
+   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+ 
+   // Battery read-out — the first (pinned) status-bar element when enabled.
+@@ -510,43 +736,24 @@ export function StatusRule({
+   const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
+   const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
+ 
+-  // A credits notice replaces the status/verb slot, but only when idle —
+-  // while busy the FaceTicker always wins (R1 render priority). The notice
+-  // text carries its own glyph; we only tint it (R1) and let it shrink (R3-M7).
++  // A credits notice replaces the status slot, but only when idle — while
++  // busy the slot is empty (the water body + TPS read-out carry the live
++  // activity signal). The notice text carries its own glyph; we only tint it
++  // (R1) and let it shrink (R3-M7).
+   const showNotice = !busy && !!notice?.text
+-  // The notice slot is shrinkable (flexShrink={1}, truncate-end), so reserve
+-  // only a small bounded width for it in the essentials budget — enough that
+-  // a short notice never gets crushed, but a long one ellipsizes instead of
+-  // shoving `model │ ctx` off-screen (R3-M7). Cap at the notice's own width
+-  // so short notices reserve exactly what they need.
+-  const NOTICE_RESERVE_MAX = 24
+-  const noticeReserve = showNotice ? Math.min(stringWidth(notice!.text), NOTICE_RESERVE_MAX) : 0
+-
+-  // Width of the must-keep left segments (indicator + model + context). They
+-  // are pinned (never shrink) and reserved so the cwd/branch on the right
+-  // yields first. The busy face width depends on the active /indicator style
+-  // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
+-  // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
+-  const slotWidth = busy
+-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
+-    : showNotice
+-      ? noticeReserve
+-      : stringWidth(status)
+-
+-  const essentialWidth =
+-    stringWidth('─ ') +
+-    batteryWidth +
+-    slotWidth +
+-    stringWidth(' │ ') +
+-    stringWidth(modelText) +
+-    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+-
+-  const rightLabel = sessionTitle ? ` ${sessionTitle} ` : cwdLabel
+-  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
++
++  // Width of the must-keep left segments (model + battery). They are pinned
++  // (never shrink); the whole row belongs to the left side since the fork
++  // dropped the cwd/branch right label. No leading border dash (R4).
++  const essentialWidth = batteryWidth + stringWidth(' │ ') + stringWidth(modelText)
++
++  // The full terminal width is the left budget — the cwd/branch right label
++  // was removed (fork), so there is no right-side yield anymore.
++  const leftWidth = Math.max(1, Math.floor(cols || 1))
+ 
+   // Whole-segment progressive disclosure for the tail: a segment renders only
+   // if it fits in the space left after the pinned essentials, evaluated in
+-  // descending priority order — bar, duration, compressions, voice, session
++  // descending priority order — duration, compressions, voice, session
+   // count, bg, cost. Lower-priority segments drop first and nothing truncates
+   // mid-segment, so status/model/context are never crushed.
+   const SEP = stringWidth(' │ ')
+@@ -562,7 +769,6 @@ export function StatusRule({
+     return false
+   }
+ 
+-  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+ 
+   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
+@@ -574,18 +780,17 @@ export function StatusRule({
+       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
+       : ''
+ 
+-  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
+   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
++  const showTps = segs.tps
+ 
+   // Idle clock — time since the last final agent response. Hidden while busy
+-  // (the FaceTicker's elapsed tail covers the live turn) and before the first
+-  // turn completes. Shares the duration breakpoint and width reservation.
++  // (the water body + TPS carry the live turn) and before the first turn
++  // completes. Shares the duration breakpoint and width reservation.
+   const showIdle =
+     segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+ 
+   const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
+   const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
+-  const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
+   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
+   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
+   const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
+@@ -609,41 +814,27 @@ export function StatusRule({
+   // seeing it, so it must not drop off a narrow terminal.
+   const showFocus = !!focusView
+ 
+-  const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
+-    event.stopImmediatePropagation?.()
+-    onSessionCountClick?.()
+-  }
+-
+-  const sessionCountNode = onSessionCountClick ? (
+-    <Box flexShrink={0} onClick={handleSessionCountClick}>
+-      <Text color={t.color.accent}> │ {sessionCountText}</Text>
+-    </Box>
+-  ) : (
+-    <Text color={t.color.muted}> │ {sessionCountText}</Text>
+-  )
+-
+   return (
+     <Box height={1}>
+       <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
+-        {/* Leading pinned chrome: border + busy face / idle status. When a
+-            notice occupies the slot the status text is dropped — the notice
+-            renders as a separate shrinkable box below so a long notice
+-            ellipsizes instead of crushing model │ ctx (R3-M7). */}
++        {/* Leading pinned chrome: battery badge (when enabled). The fork
++            dropped the border dash here — the water wave now starts the
++            strip flush at the left edge (R4). */}
+         <Box flexDirection="row" flexShrink={0}>
+-          <Text color={t.color.border}>{'─ '}</Text>
+           {showBattery ? (
+             <Text color={batteryColorVal}>
+               {batteryText}
+               <Text color={t.color.muted}>{' │ '}</Text>
+             </Text>
+           ) : null}
+-          {busy ? (
+-            <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
+-          ) : showNotice ? null : (
+-            <Text color={statusColor} wrap="truncate-end">
+-              {status}
+-            </Text>
+-          )}
++        </Box>
++        {/* Water wave — pinned after the border so the model/context
++            columns never shift between states; frozen drift while idle,
++            TPS-driven while busy. Width adapts to the terminal so narrow
++            columns don't crush the tail segments (TPS, subagents, resume
++            hint). */}
++        <Box flexShrink={0} width={waterCells}>
++          <WaterTicker busy={busy} cells={waterCells} />
+         </Box>
+         {/* Notice slot — the only shrinkable left element (R3-M7). Sits in a
+             flexShrink={1} box with truncate-end so it yields/ellipsizes
+@@ -655,7 +846,8 @@ export function StatusRule({
+             </Text>
+           </Box>
+         ) : null}
+-        {/* Pinned essentials — model + context never shrink, always visible. */}
++        {/* Pinned essentials — model never shrinks, always visible. Context
++            + TPS move to the right-aligned group at the tail. */}
+         <Box flexDirection="row" flexShrink={0}>
+           {DEV_CREDITS_MODE ? (
+             <Text color={t.color.warn} wrap="truncate-end">
+@@ -666,12 +858,6 @@ export function StatusRule({
+             {' │ '}
+             {modelText}
+           </Text>
+-          {ctxLabel ? (
+-            <Text color={t.color.muted} wrap="truncate-end">
+-              {' │ '}
+-              {ctxLabel}
+-            </Text>
+-          ) : null}
+         </Box>
+         {showFocus ? (
+           <Box flexDirection="row" flexShrink={0}>
+@@ -679,12 +865,6 @@ export function StatusRule({
+             <Text color={t.color.warn}>◉ focus</Text>
+           </Box>
+         ) : null}
+-        {showBar ? (
+-          <Text color={t.color.muted} wrap="truncate-end">
+-            {' │ '}
+-            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+-          </Text>
+-        ) : null}
+         {showDuration ? (
+           <Text color={t.color.muted} wrap="truncate-end">
+             {' │ '}
+@@ -716,7 +896,6 @@ export function StatusRule({
+             {voiceLabel}
+           </Text>
+         ) : null}
+-        {showSessionCount ? sessionCountNode : null}
+         {showBg ? (
+           <Text color={t.color.muted} wrap="truncate-end">
+             {' │ '}
+@@ -744,18 +923,24 @@ export function StatusRule({
+             renders last — any overflow truncates the HUD itself rather than the
+             budgeted segments before it. It self-hides when no delegation runs. */}
+         <SpawnHud t={t} />
+-      </Box>
+-
+-      {rightWidth > 0 ? (
+-        <>
+-          <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
+-          <Box flexShrink={0} width={rightWidth}>
+-            <Text bold={!!sessionTitle} color={sessionTitle ? t.color.accent : t.color.label} wrap="truncate-end">
+-              {rightLabel}
++        {/* Right-aligned readouts: current/total context + live TPS are
++            pinned against the right edge (the flexGrow spacer pushes them
++            there), so the strip reads model on the left, numbers on the
++            right. */}
++        <Box flexGrow={1} />
++        <Box flexDirection="row" flexShrink={0}>
++          {/* Right-aligned readout — no leading separator (R4): the context
++              number sits flush against the spacer so the strip reads
++              model │ ctx numbers on the right. */}
++          {ctxLabel ? <Text color={t.color.muted} wrap="truncate-end">{ctxLabel}</Text> : null}
++          {showTps ? (
++            <Text color={STATUS_METRIC_GRAY} wrap="truncate-end">
++              {' │ '}
++              <TpsMeter show />
+             </Text>
+-          </Box>
+-        </>
+-      ) : null}
++          ) : null}
++        </Box>
++      </Box>
+     </Box>
+   )
+ }
+@@ -860,24 +1045,17 @@ interface StatusRuleProps {
+   focusView?: boolean
+   bgCount: number
+   lastTurnEndedAt?: null | number
+-  liveSessionCount: number
+   busy: boolean
+   cols: number
+-  cwdLabel: string
+   model: string
+   modelFast?: boolean
+   modelReasoningEffort?: string
+-  indicatorStyle?: IndicatorStyle
+   notice?: Notice | null
+   sessionStartedAt?: null | number
+-  sessionTitle?: string
+-  status: string
+   statusColor: string
+   t: Theme
+-  turnStartedAt?: null | number
+   usage: Usage
+   voiceLabel?: string
+-  onSessionCountClick?: () => void
+ }
+ 
+ interface StickyPromptTrackerProps {
+diff --git a/ui-tui/src/components/appLayout.tsx b/ui-tui/src/components/appLayout.tsx
+index f358097699..8f2e079a88 100644
+--- a/ui-tui/src/components/appLayout.tsx
++++ b/ui-tui/src/components/appLayout.tsx
+@@ -493,22 +493,15 @@ const StatusRulePane = memo(function StatusRulePane({
+         bgCount={ui.bgTasks.size}
+         busy={ui.busy}
+         cols={composer.cols}
+-        cwdLabel={status.cwdLabel}
+         focusView={ui.focusView}
+-        indicatorStyle={ui.indicatorStyle}
+         lastTurnEndedAt={status.lastTurnEndedAt}
+-        liveSessionCount={ui.liveSessionCount}
+         model={ui.info?.model ?? ''}
+         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
+         modelReasoningEffort={ui.info?.reasoning_effort}
+         notice={ui.notice}
+-        onSessionCountClick={() => patchOverlayState({ sessions: true })}
+         sessionStartedAt={status.sessionStartedAt}
+-        sessionTitle={status.sessionTitle}
+-        status={ui.status}
+         statusColor={status.statusColor}
+         t={ui.theme}
+-        turnStartedAt={status.turnStartedAt}
+         usage={ui.usage}
+         voiceLabel={status.voiceLabel}
+       />
+diff --git a/ui-tui/src/content/faces.ts b/ui-tui/src/content/faces.ts
+deleted file mode 100644
+index 1bb64debb2..0000000000
+--- a/ui-tui/src/content/faces.ts
++++ /dev/null
+@@ -1,17 +0,0 @@
+-export const FACES = [
+-  '(｡•́︿•̀｡)',
+-  '(◔_◔)',
+-  '(¬‿¬)',
+-  '( •_•)>⌐■-■',
+-  '(⌐■_■)',
+-  '(´･_･`)',
+-  '◉_◉',
+-  '(°ロ°)',
+-  '( ˘⌣˘)♡',
+-  'ヽ(>∀<☆)☆',
+-  '٩(๑❛ᴗ❛๑)۶',
+-  '(⊙_⊙)',
+-  '(¬_¬)',
+-  '( ͡° ͜ʖ ͡°)',
+-  'ಠ_ಠ'
+-]
+diff --git a/ui-tui/src/entry.tsx b/ui-tui/src/entry.tsx
+index 6f856cf57a..4e1d8bbcce 100644
+--- a/ui-tui/src/entry.tsx
++++ b/ui-tui/src/entry.tsx
+@@ -12,6 +12,7 @@ import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.
+ import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
+ import { openExternalUrl } from './lib/openExternalUrl.js'
+ import { recordParentLifecycle } from './lib/parentLog.js'
++import { flushExitSessionId } from './lib/sessionExit.js'
+ import { resetTerminalModes } from './lib/terminalModes.js'
+ 
+ if (!process.stdin.isTTY) {
+@@ -37,6 +38,10 @@ resetTerminalModes()
+ // graceful-exit cleanups is safe.
+ process.on('exit', () => {
+   resetTerminalModes()
++  // Print the user-initiated exit line (die() remembered the durable session
++  // id) only now — after the alt-screen exit / mode resets — so the line
++  // lands on the restored normal screen and survives the shell prompt.
++  flushExitSessionId()
+ })
+ 
+ // Desktop terminals benefit from a clean startup slate because the TUI usually
+diff --git a/ui-tui/src/gatewayTypes.ts b/ui-tui/src/gatewayTypes.ts
+index 8d13e0f3f2..36f686659a 100644
+--- a/ui-tui/src/gatewayTypes.ts
++++ b/ui-tui/src/gatewayTypes.ts
+@@ -179,6 +179,10 @@ export interface SystemBatteryResponse {
+ export interface SessionCreateResponse {
+   info?: SessionInfo & { config_warning?: string; credential_warning?: string }
+   session_id: string
++  /** Durable, resumable session id (what `--resume` accepts). Present from
++   *  the very first response — unlike session.info, which only arrives after
++   *  the agent build — so early exits can still print a valid resume handle. */
++  stored_session_id?: string
+ }
+ 
+ export interface SessionResumeResponse {
+diff --git a/ui-tui/src/lib/sessionExit.ts b/ui-tui/src/lib/sessionExit.ts
+new file mode 100644
+index 0000000000..744fb09648
+--- /dev/null
++++ b/ui-tui/src/lib/sessionExit.ts
+@@ -0,0 +1,55 @@
++import { writeSync } from 'node:fs'
++
++/** Return only a durable stored session id; never substitute the gateway UI key. */
++export const durableExitSessionId = (sid: null | string | undefined): null | string => sid || null
++
++/**
++ * Print the session id on user-initiated exits (Ctrl+C / Ctrl+D when idle,
++ * /quit) so the user can resume the conversation afterwards. Must run AFTER
++ * the terminal has fully left the alternate screen — the process.on('exit')
++ * handler in entry.tsx resets terminal modes (incl. \x1b[?1049l) and then
++ * flushes the remembered line, so it lands on the restored normal screen and
++ * survives the shell prompt that follows.
++ *
++ * `emit` is injectable for tests; the default writes to fd 1 (stdout).
++ */
++export const emitSessionIdAtExit = (
++  sid: null | string,
++  emit: (text: string) => void = (text: string) => {
++    writeSync(1, text)
++  }
++): void => {
++  if (!sid) {
++    return
++  }
++
++  try {
++    emit(`\nSession ${sid} ended — resume with: hermes --resume ${sid}\n`)
++  } catch {
++    // stdout already gone (dashboard tab closed / EIO) — nothing to show
++  }
++}
++
++/**
++ * die() computes the durable, resumable session id (stored_session_id — seeded
++ * into info from the session.create response before the agent build finishes,
++ * then refreshed by session.info — NOT the gateway-internal 8-hex sid) and
++ * remembers it here.
++ * entry.tsx flushes it from the process.on('exit') handler after resetting
++ * terminal modes, guaranteeing the line is the last thing on the terminal
++ * before the shell takes over.
++ */
++let pendingExitSid: null | string = null
++
++export const rememberExitSessionId = (sid: null | string): void => {
++  pendingExitSid = sid
++}
++
++export const flushExitSessionId = (emit?: (text: string) => void): void => {
++  if (pendingExitSid === null) {
++    return
++  }
++
++  emitSessionIdAtExit(pendingExitSid, emit)
++  pendingExitSid = null
++}
+diff --git a/ui-tui/src/lib/tps.ts b/ui-tui/src/lib/tps.ts
+new file mode 100644
+index 0000000000..32875dd34c
+--- /dev/null
++++ b/ui-tui/src/lib/tps.ts
+@@ -0,0 +1,136 @@
++/**
++ * Token-per-second meter for the status bar — a faithful adaptation of
++ * pi-agent-flow's EMA-smoothed TPS estimator
++ * (src/snapshot/runner-events.ts, `updateSmoothedTps`).
++ *
++ * Calculation: streamed text deltas are converted to tokens with a 4:1 char
++ * heuristic, accumulated in a pending bucket, and only converted to a rate
++ * once MIN_TPS_SAMPLE_MS has elapsed. The instantaneous rate is capped
++ * (MAX_INSTANT_TPS suppresses burst artifacts from a single large chunk) and
++ * EMA-smoothed (EMA_ALPHA), with outlier damping (alpha × 0.3 when a sample
++ * exceeds 2× the smoothed value) so the readout runs evenly instead of
++ * jumping between chunks.
++ *
++ * Hermes adaptation over pi: a gap longer than STALE_WINDOW_MS (tool
++ * execution, thinking, user pause) restarts the measurement window instead of
++ * dividing the rate across idle time — the meter holds its last value while
++ * the model works silently and only moves from real streaming.
++ */
++
++export const CHARS_PER_TOKEN = 4
++export const MIN_TPS_SAMPLE_MS = 250
++export const MAX_INSTANT_TPS = 300
++export const EMA_ALPHA = 0.35
++export const OUTLIER_DAMP_FACTOR = 0.3
++export const STALE_WINDOW_MS = 3000
++
++export interface TpsTracker {
++  /** Feed a streamed text delta; chars are converted to tokens. */
++  sample(chars: number, now?: number): void
++  /** Feed an exact token count (e.g. a real usage delta). */
++  sampleTokens(tokens: number, now?: number): void
++  /** Current EMA-smoothed tokens/sec (0 = no samples yet). */
++  read(): number
++  /** Drop all measurement state (session switch / new turn). */
++  reset(now?: number): void
++}
++
++export function createTpsTracker(): TpsTracker {
++  let smoothedTps = 0
++  // null = never seeded (or reset); a numeric value is the last sample time.
++  let lastEmitTime: number | null = null
++  let pendingTokens = 0
++
++  const emit = (now: number) => {
++    if (lastEmitTime === null) {
++      // First sample after a reset — seed the clock only; the pending
++      // tokens stay in the bucket so the first window measures them.
++      lastEmitTime = now
++
++      return
++    }
++
++    const deltaMs = now - lastEmitTime
++
++    if (deltaMs < MIN_TPS_SAMPLE_MS) {
++      return
++    }
++
++    // No streaming for longer than the stale window (tool execution,
++    // thinking, gap between turns). Restart the window WITHOUT touching the
++    // smoothed value — the rate must not be divided across idle time.
++    if (deltaMs > STALE_WINDOW_MS) {
++      lastEmitTime = now
++      pendingTokens = 0
++
++      return
++    }
++
++    if (pendingTokens <= 0) {
++      lastEmitTime = now
++
++      return
++    }
++
++    const deltaSec = deltaMs / 1000
++    let instantRate = pendingTokens / deltaSec
++
++    if (instantRate > MAX_INSTANT_TPS) {
++      instantRate = MAX_INSTANT_TPS
++    }
++
++    if (smoothedTps === 0) {
++      smoothedTps = instantRate
++    } else {
++      // Outlier rejection: dampen burst spikes that would dominate the EMA.
++      const alpha = instantRate > 2 * smoothedTps ? EMA_ALPHA * OUTLIER_DAMP_FACTOR : EMA_ALPHA
++      smoothedTps = alpha * instantRate + (1 - alpha) * smoothedTps
++    }
++
++    lastEmitTime = now
++    pendingTokens = 0
++  }
++
++  return {
++    sample(chars, now = Date.now()) {
++      if (chars <= 0) {
++        return
++      }
++
++      pendingTokens += Math.max(1, Math.round(chars / CHARS_PER_TOKEN))
++      emit(now)
++    },
++
++    sampleTokens(tokens, now = Date.now()) {
++      if (tokens <= 0) {
++        return
++      }
++
++      pendingTokens += tokens
++      emit(now)
++    },
++
++    read() {
++      return smoothedTps
++    },
++
++    reset() {
++      smoothedTps = 0
++      lastEmitTime = null
++      pendingTokens = 0
++    }
++  }
++}
++
++/**
++ * Fixed-width tokens-per-second label (pi-agent-flow `formatTps`): one
++ * decimal, left-padding to 5 columns so the readout never shifts the
++ * surrounding text as the number changes width (` 45.2` vs `  9.8`).
++ */
++export function formatTps(value: number): string {
++  if (!value || value <= 0) {
++    return '----- t/s'
++  }
++
++  return `${value.toFixed(1).padStart(5)} t/s`
++}
+diff --git a/ui-tui/src/types.ts b/ui-tui/src/types.ts
+index 6e225363cb..5b86e0f135 100644
+--- a/ui-tui/src/types.ts
++++ b/ui-tui/src/types.ts
+@@ -194,6 +194,10 @@ export interface SessionInfo {
+   reasoning_effort?: string
+   release_date?: string
+   service_tier?: string
++  /** Durable, resumable session id (session.create's stored_session_id). The
++   *  UI's `sid` is the gateway-internal 8-hex key — never printable as a
++   *  resume handle. */
++  stored_session_id?: string
+   skills: Record<string, string[]>
+   system_prompt?: string
+   tools: Record<string, string[]>

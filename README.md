@@ -16,8 +16,11 @@ with the patch-set applied on top after each `hermes update`.
 | `scripts/reapply-ui-patches.sh` | Inventory the active non-spec snapshot; historical cherry-picks are disabled. |
 | `scripts/upstream-sync.sh` | Old rebase pipeline for when this repo was a full fork (kept for reference). |
 | `patches/fork-local-v202683.patch` | Archived full-fork export as of v2026.8.3. It is retained for historical recovery only and is never applied by the active workflow. |
-| `patches/managed-current-no-spec-20260809.patch` | Active consolidated snapshot of the managed tree after speculative removal; no speculative backend/config/UI wiring is present. |
+| `patches/managed-current-no-spec-20260811.patch` | Active consolidated snapshot of the managed tree after speculative removal; no speculative backend/config/UI wiring is present. |
+| `patches/statusline-hide-session-title-20260809.patch` | Focused statusline regression patch: session titles stay in the switcher and never render in the status row. |
 | `patches/runtime-budget-20260809.patch` | Global interactive execution-budget prompt plus terminal/process runtime advice and synchronous timeout enforcement. |
+| `patches/terminal-bg-probe-20260813.patch` | Terminal background-pixel probe: host-window detection via `windowlist.swift` + a 30s live re-probe the TUI runs from `HERMES_TUI_PROBE_CMD` (no restart when the host theme changes). |
+| `patches/context-fallback-fix-20260813.patch` | Fail-closed context read-out: never fall back to the lifetime session total when current occupancy is unknown. |
 
 ## Workflow
 
