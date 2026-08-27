@@ -1,0 +1,10 @@
+{
+ "arm": "arm2-sageon",
+ "f2p": "71/71",
+ "p2p": "128/128",
+ "reward": 1,
+ "partial": 1.0,
+ "turns": 151,
+ "wall_min": 14.7,
+ "sage_injections": 4
+}
