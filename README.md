@@ -45,47 +45,6 @@ managed venv and rebuilds the managed TUI dist.
 If the managed runtime ever needs the surface back without a full patch
 apply: `~/.local/bin/hermes` is a wrapper preferring the managed runtime.
 
-## Benchmark: agy worker × sage supervisor on DeepSWE-style tasks
-
-Pilot AB benchmark (`benchmark/deepswe-eb/`) measuring whether **sage** (the
-Antigravity supervisor hook that audits a fast-tier agy worker's trajectory and
-can inject guidance/plans/redirects mid-run) improves long-horizon coding
-outcomes. Workers are Gemini 3.7 Flash agents; grading uses the official
-DeepSWE-style verifier frame for `kysely-window-grouping-helpers`
-(254 fail-to-pass + 22 pass-to-pass tests, byte-exact SQL compile checks across
-postgres/mysql/mssql/sqlite dialects, CTRF node-id canonical matching, binary
-reward).
-
-| Run | Tier | Sage | F2P | P2P | Reward | Turns |
-|---|---|---|---|---|---|---|
-| arm3 | Flash Medium | OFF | 254/254 | 22/22 | 1.0 | 141 |
-| arm4 | Flash Medium | ON (pre-improvement) | 250/254 | 22/22 | 0.0 | 34 |
-| r2a | Flash Medium | OFF | 254/254 | 22/22 | 1.0 | ~120 |
-| r2b | Flash Medium | ON | 254/254 | 22/22 | 1.0 | 44 |
-| r2c | Flash Medium | ON | 254/254 | 22/22 | 1.0 | 154 |
-
-**Findings (pilot scale, n small — not statistically significant):**
-
-- Flash **Medium solves the hardest task** in the local task set in every run
-  where the brief includes explicit byte-exact-verification requirements
-  (arm3, r2a, r2b, r2c: all reward 1.0).
-- The single failure (arm4) was one stray-space SQL emission across 4
-  dialect-shared assertions; it predates two harness fixes — a brief requiring
-  byte-exact self-verification before completion, and per-spawn sage hot-unplug
-  (`AGY_SAGE_DISABLED=1`, `--sage-off`) replacing shared-file mutation.
-- With those fixes, sage ON and sage OFF both reach full reward; sage-ON runs
-  show fewer turns (44 vs ~120–154), hinting at shorter routes, but wall-time
-  and turn deltas are within run-to-run variance at this sample size.
-- Binary reward collapses a 250/254 cosmetic defect to "failure"; report the
-  f2p pass fraction alongside it (already present in the CTRF reports under
-  `results/*/new_ctrf.json`).
-
-Methodology notes / known limitations: single task per cell (n ≤ 2 after
-grouping), no variance CI at this scale, model identified by provider tier
-label rather than snapshot id, brief text is published in the repo (the graded
-task's own `instruction.md` remains the authoritative spec). The arm1/arm2 runs
-used an easier task and are excluded from the table.
-
 ## History
 
 The full fork history (source-code era) is preserved on origin:
