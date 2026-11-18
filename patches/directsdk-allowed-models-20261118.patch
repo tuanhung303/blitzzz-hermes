@@ -1,0 +1,137 @@
+diff -ru -x __pycache__ -x .pytest_cache profiles/hm/cache/scratch/directsdk-backup-20261118/__init__.py plugins/claude-subscription-directsdk-experimental/__init__.py
+--- profiles/hm/cache/scratch/directsdk-backup-20261118/__init__.py	2026-11-18 11:54:03
++++ plugins/claude-subscription-directsdk-experimental/__init__.py	2026-11-18 16:14:46
+@@ -10,10 +10,10 @@
+ 
+ # Dual import: the Hermes loader imports this directory as a package; the flat test path does not.
+ try:
+-    from .model_catalog import ALIASES, MODEL_METADATA, MODEL_CAPABILITIES, PICKER_ROUTES, native_model
++    from .model_catalog import ALIASES, CONTEXT_WINDOWS, MODEL_METADATA, MODEL_CAPABILITIES, PICKER_ROUTES, native_model
+     from .directsdk_setup import INSTALL_HINT, _resolve
+ except ImportError:
+-    from model_catalog import ALIASES, MODEL_METADATA, MODEL_CAPABILITIES, PICKER_ROUTES, native_model
++    from model_catalog import ALIASES, CONTEXT_WINDOWS, MODEL_METADATA, MODEL_CAPABILITIES, PICKER_ROUTES, native_model
+     from directsdk_setup import INSTALL_HINT, _resolve
+ 
+ logger = logging.getLogger(__name__)
+@@ -81,6 +81,22 @@
+ class ClaudeOAuthDirectSDKProfile(ProviderProfile):
+     model_metadata = MODEL_METADATA
+ 
++    # Hermes merges the pinned fallback list back into the live picker, so the `allowed_models`
++    # setting must narrow it too. Read per access: the setting is per profile and can change live.
++    @property
++    def fallback_models(self):
++        rows = self.__dict__.get('_all_fallback_models')
++        try:
++            from .directsdk_setup import filter_allowed
++        except ImportError:
++            from directsdk_setup import filter_allowed
++        narrowed = filter_allowed(list(rows)) if rows else rows
++        return tuple(narrowed) if narrowed else rows
++
++    @fallback_models.setter
++    def fallback_models(self, value):
++        self.__dict__['_all_fallback_models'] = value
++
+     def get_model_context_length(self, model):
+         route = native_model(model)
+         pinned = self.model_metadata.get(route, {}).get('context_window')
+@@ -184,10 +200,15 @@
+     process_command=_process_command,
+     process_args=(),
+     process_command_env_vars=('CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND',),
+-    default_aux_model='claude-sonnet-5[1m]',
++    default_aux_model='claude-sonnet-5-5[1m]',
+     # Access-gated models (Mythos) stay out: an account sees one only when its own picker offers it.
+     fallback_models=PICKER_ROUTES,
+-    model_aliases={alias: native_model(alias) for alias in ALIASES},
++    # Each pinned id is also an alias of its own route, so `/model claude-opus-5` names Opus 5 even
++    # when `allowed_models` narrows the fallback list Hermes prefix-matches against.
++    # Fable 5 is a real model the table does not pin; without its own alias it prefix-matches Fable 5.2.
++    model_aliases={'claude-fable-5': 'claude-fable-5',
++                   **{canonical: native_model(canonical) for canonical in CONTEXT_WINDOWS},
++                   **{alias: native_model(alias) for alias in ALIASES}},
+     # A dataclass field (Hermes >= 0.21.4), so a method on the subclass would be shadowed by its None default.
+     classify_api_error=classify_api_error,
+ )
+diff -ru -x __pycache__ -x .pytest_cache profiles/hm/cache/scratch/directsdk-backup-20261118/directsdk_setup.py plugins/claude-subscription-directsdk-experimental/directsdk_setup.py
+--- profiles/hm/cache/scratch/directsdk-backup-20261118/directsdk_setup.py	2026-11-18 11:54:03
++++ plugins/claude-subscription-directsdk-experimental/directsdk_setup.py	2026-11-18 15:50:05
+@@ -119,6 +119,39 @@
+     return value is not False and value != 0
+ 
+ 
++ALLOWED_MODELS_SETTING = "allowed_models"
++
++
++def allowed_routes():
++    """The active profile's ``allowed_models`` setting as a set of Hermes route ids, or ``None`` (no limit).
++
++    Each entry may be an alias (``opus``), a canonical id (``claude-opus-5-5``) or a route id
++    (``claude-opus-5-5[1m]``); all resolve through ``native_model`` to the route the picker lists.
++    """
++    value = _setting(ALLOWED_MODELS_SETTING)
++    if isinstance(value, str):
++        value = [part for part in value.replace(",", " ").split()]
++    if not isinstance(value, (list, tuple)):
++        return None
++    routes = set()
++    for item in value:
++        if not isinstance(item, str) or not item.strip():
++            continue
++        try:
++            routes.add(native_model(item.strip()))
++        except ValueError:
++            continue
++    return routes or None
++
++
++def filter_allowed(rows):
++    """Keep only the picker rows (dicts with ``id``, or plain ids) the ``allowed_models`` setting names."""
++    allowed = allowed_routes()
++    if allowed is None or rows is None:
++        return rows
++    return [row for row in rows if (row["id"] if isinstance(row, dict) else row) in allowed]
++
++
+ def apply_config_dir(env):
+     """Select the active profile's Claude config directory on a child env, in place."""
+     override = env.pop("CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR", None)
+@@ -283,7 +316,7 @@
+         routes[route] = {"id": route, "label": _catalog_label(canonical),
+                          "note": credit_note if canonical in credit_billed_on_plan else "",
+                          "upstream_requests": upstream}
+-    return list(routes.values())
++    return filter_allowed(list(routes.values())) or None
+ 
+ 
+ def fetch_usage(command=None, env=None, timeout=8):
+diff -ru -x __pycache__ -x .pytest_cache profiles/hm/cache/scratch/directsdk-backup-20261118/plugin.yaml plugins/claude-subscription-directsdk-experimental/plugin.yaml
+--- profiles/hm/cache/scratch/directsdk-backup-20261118/plugin.yaml	2026-11-18 11:54:03
++++ plugins/claude-subscription-directsdk-experimental/plugin.yaml	2026-11-18 15:50:13
+@@ -23,6 +23,11 @@
+     default: ""
+     label: Claude login config directory
+     description: Select this profile's logged-in Claude config directory, overriding process environment directories.
++  allowed_models:
++    type: list
++    default: []
++    label: Allowed models
++    description: Limit the model picker to these models (aliases like opus, or ids like claude-opus-5-5). Empty lists every model.
+   claude_code_telemetry:
+     type: bool
+     default: true
+Only in plugins/claude-subscription-directsdk-experimental/tests: test_directsdk_allowed_models.py
+diff -ru -x __pycache__ -x .pytest_cache profiles/hm/cache/scratch/directsdk-backup-20261118/tests/test_directsdk_models.py plugins/claude-subscription-directsdk-experimental/tests/test_directsdk_models.py
+--- profiles/hm/cache/scratch/directsdk-backup-20261118/tests/test_directsdk_models.py	2026-11-18 11:54:03
++++ plugins/claude-subscription-directsdk-experimental/tests/test_directsdk_models.py	2026-11-18 16:04:35
+@@ -29,7 +29,7 @@
+ def test_catalog_windows_match_explicit_native_routes(profile):
+     from agent.model_metadata import get_model_context_length
+     assert set(profile.fallback_models) == set(EXPECTED)
+-    assert profile.default_aux_model == 'claude-sonnet-5[1m]'
++    assert profile.default_aux_model == 'claude-sonnet-5-5[1m]'
+     for model, window in {**EXPECTED, **GATED}.items():
+         assert profile.get_model_context_length(model) == window
+         assert get_model_context_length(model, provider=profile.name) == window

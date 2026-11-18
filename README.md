@@ -21,6 +21,8 @@ with the patch-set applied on top after each `hermes update`.
 | `patches/runtime-budget-20260809.patch` | Global interactive execution-budget prompt plus terminal/process runtime advice and synchronous timeout enforcement. |
 | `patches/terminal-bg-probe-20260813.patch` | Terminal background-pixel probe: host-window detection via `windowlist.swift` + a 30s live re-probe the TUI runs from `HERMES_TUI_PROBE_CMD` (no restart when the host theme changes). |
 | `patches/context-fallback-fix-20260813.patch` | Fail-closed context read-out: never fall back to the lifetime session total when current occupancy is unknown. |
+| `patches/sleek-ui-v0232.patch` | UI-only status rule for Hermes v0.23.2 (`ui-tui/src` only): Braille water wave, client-side TPS meter, one muted gray, context number turns warn/critical at 80%/95%. Apply in `~/.hermes/hermes-agent` with `git apply`, then `pnpm run build` in `ui-tui` (Node from `~/.hermes/tools`). |
+| `patches/directsdk-allowed-models-20261118.patch` | Adds an `allowed_models` setting to the `claude-subscription-directsdk-experimental` plugin (picker and fallback list narrowed, each pinned id is its own alias, aux model Sonnet 5.5). It is a `diff -ru` against the original plugin directory; apply to `~/.hermes/plugins/...` and each `~/.hermes/profiles/<p>/plugins/...` copy. Config per profile: `plugins.entries.claude-subscription-directsdk-experimental.settings.allowed_models: [fable, opus, sonnet, haiku]`, `model.context_length: 355000`, and `model_overrides.claude-subscription-directsdk-experimental.<id>.context_window: 355000` for every alias, canonical id and `[1m]` route (Hermes matches overrides by the exact id typed). |
 
 ## Workflow
 
