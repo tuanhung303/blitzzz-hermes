@@ -1,0 +1,2865 @@
+diff --git a/ui-tui/src/__tests__/appChromeBlockedTimers.test.tsx b/ui-tui/src/__tests__/appChromeBlockedTimers.test.tsx
+index eafc6d0cee..e96fece46d 100644
+--- a/ui-tui/src/__tests__/appChromeBlockedTimers.test.tsx
++++ b/ui-tui/src/__tests__/appChromeBlockedTimers.test.tsx
+@@ -9,7 +9,7 @@ import { GatewayProvider } from '../app/gatewayContext.js'
+ import type { AppLayoutProps, OverlayState, UiState } from '../app/interfaces.js'
+ import { patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+ import { patchUiState, resetUiState } from '../app/uiStore.js'
+-import { StatusRule } from '../components/appChrome.js'
++import { StatusRule, WATER_FRAME_MS } from '../components/appChrome.js'
+ import { AppLayout } from '../components/appLayout.js'
+ import type { GatewayClient } from '../gatewayClient.js'
+ import { DEFAULT_VOICE_RECORD_KEY } from '../lib/platform.js'
+@@ -28,7 +28,7 @@ const mounted: Array<() => void> = []
+  * Mount a real StatusRule through Ink so the leaf components' effects — and
+  * therefore their `setInterval` calls — actually run.  The existing
+  * appChromeStatusRule tests invoke `StatusRule(...)` as a plain function,
+- * which only builds the element tree and never mounts FaceTicker /
++ * which only builds the element tree and never mounts WaterTicker /
+  * SessionDuration / IdleSince, so it cannot observe timer behaviour.
+  *
+  * Teardown is registered up front so a failing assertion still unmounts the
+@@ -80,29 +80,25 @@ const idleProps: StatusRuleProps = {
+   bgCount: 0,
+   busy: false,
+   cols: 120,
+-  cwdLabel: '~/repo',
+   lastTurnEndedAt: T0 - 5_000,
+-  liveSessionCount: 0,
+   model: 'opus-4.8',
+   sessionStartedAt: T0 - 60_000,
+   status: 'ready',
+   statusColor: DEFAULT_THEME.color.ok,
+   t: DEFAULT_THEME,
+-  turnStartedAt: null,
+   usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
+   voiceLabel: ''
+ }
+ 
+-// Busy swaps the idle read-out for the FaceTicker, which owns the glyph +
+-// verb + elapsed-clock trio.
++// Busy drives the water body's drift clock (WATER_FRAME_MS).
+ const busyProps: StatusRuleProps = {
+   ...idleProps,
+   busy: true,
+-  indicatorStyle: 'kaomoji',
+-  lastTurnEndedAt: null,
+-  turnStartedAt: T0 - 30_000
++  lastTurnEndedAt: null
+ }
+ 
++const waterTimers = (spy: IntervalSpy) => armedDelays(spy).filter(delay => delay === WATER_FRAME_MS).length
++
+ /** Delays of every interval armed while the spy was installed. */
+ const armedDelays = (spy: IntervalSpy) => spy.mock.calls.map(call => call[1])
+ 
+@@ -161,15 +157,12 @@ const layoutProps: AppLayoutProps = {
+   mouseTracking: 'off',
+   progress: { showProgressArea: false },
+   status: {
+-    cwdLabel: '~/repo',
+     goodVibesTick: 0,
+     lastTurnEndedAt: T0 - 5_000,
+     sessionStartedAt: T0 - 60_000,
+-    sessionTitle: '',
+     showStickyPrompt: false,
+     statusColor: DEFAULT_THEME.color.ok,
+     stickyPrompt: '',
+-    turnStartedAt: null,
+     voiceLabel: ''
+   },
+   transcript: {
+@@ -240,40 +233,44 @@ describe('status-chrome timers under an occluding overlay', () => {
+     expect(oneSecondTimers(intervalSpy)).toBe(0)
+   })
+ 
+-  it('arms the FaceTicker glyph/verb/clock trio mid-turn when nothing covers the rule', () => {
++  it('arms the water drift clock mid-turn when nothing covers the rule', () => {
+     mount(busyProps)
+ 
+-    // kaomoji cadence for the glyph + verb rotation, plus the elapsed clock.
+-    expect(armedDelays(intervalSpy)).toContain(2500)
++    expect(waterTimers(intervalSpy)).toBe(1)
+     expect(oneSecondTimers(intervalSpy)).toBeGreaterThan(0)
+   })
+ 
+-  it('freezes the FaceTicker verb on compacting and skips verb rotation (#97239)', () => {
++  it('arms no water clock while idle: the drift frame stays frozen in place', () => {
++    const { output } = mount(idleProps)
++
++    expect(waterTimers(intervalSpy)).toBe(0)
++    expect(output()).toMatch(/[\u2801-\u28ff]/)
++  })
++
++  it('shows compacting next to the water body mid-turn (#97239)', () => {
+     const { output } = mount({ ...busyProps, compacting: true })
+ 
+     expect(output()).toContain('compacting')
+-    // Glyph still ticks at the kaomoji cadence; the rotating-verb timer does not.
+-    expect(armedDelays(intervalSpy).filter(delay => delay === 2500)).toHaveLength(1)
+-    expect(oneSecondTimers(intervalSpy)).toBeGreaterThan(0)
++    expect(waterTimers(intervalSpy)).toBe(1)
+   })
+ 
+-  it('arms no FaceTicker timer mid-turn while the modal widget slot is open', () => {
++  it('arms no water clock mid-turn while the modal widget slot is open', () => {
+     patchOverlayState({ widget: { appId: 'demo', state: null } })
+ 
+     mount(busyProps)
+ 
+-    expect(armedDelays(intervalSpy)).not.toContain(2500)
++    expect(waterTimers(intervalSpy)).toBe(0)
+     expect(oneSecondTimers(intervalSpy)).toBe(0)
+   })
+ 
+-  it('keeps the FaceTicker running mid-turn under a flow-layout sudo prompt', () => {
++  it('keeps the water running mid-turn under a flow-layout sudo prompt', () => {
+     // `sudo` is in `$isBlocked` but renders in PromptZone's normal flow, so it
+-    // pushes the rule down rather than covering it — the trio must keep going.
++    // pushes the rule down rather than covering it — the clock must keep going.
+     patchOverlayState({ sudo: { requestId: 'sudo-1' } })
+ 
+     mount(busyProps)
+ 
+-    expect(armedDelays(intervalSpy)).toContain(2500)
++    expect(waterTimers(intervalSpy)).toBe(1)
+     expect(oneSecondTimers(intervalSpy)).toBeGreaterThan(0)
+   })
+ 
+@@ -346,6 +343,23 @@ describe('status-chrome timers under an occluding overlay', () => {
+   })
+ })
+ 
++describe('status rule layout', () => {
++  // Column of the context read-out in the first rendered frame.
++  const contextColumn = (output: string) => {
++    const line = output.split('\n').find(row => row.includes('50k/200k')) ?? ''
++
++    return [...line.slice(0, line.indexOf('50k/200k'))].length
++  }
++
++  it('keeps the context column in place between idle and busy with no TPS data', () => {
++    const idle = contextColumn(mount(idleProps).output())
++    const busy = contextColumn(mount(busyProps).output())
++
++    expect(idle).toBeGreaterThan(0)
++    expect(busy).toBe(idle)
++  })
++})
++
+ // teknium1's review of #12463 called out that its test asserted on a `picker`
+ // overlay state that no longer exists.  Pin the gate to fields the current
+ // OverlayState actually carries so a rename breaks this file loudly.
+@@ -417,7 +431,7 @@ describe('AppLayout status-rule visibility', () => {
+ 
+     // The rule is genuinely rendered — the approval prompt pushed it, it did
+     // not cover it — so freezing its clock would freeze something visible.
+-    expect(layout.output()).toContain('~/repo')
++    expect(layout.output()).toMatch(/[\u2801-\u28ff]/)
+     expect(layout.output()).toContain('1m 0s')
+     expect(oneSecondTimers(intervalSpy)).toBe(2)
+ 
+diff --git a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
+index 31eaf8555f..ea13e983f5 100644
+--- a/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
++++ b/ui-tui/src/__tests__/appChromeStatusRule.test.tsx
+@@ -1,5 +1,5 @@
+ import React from 'react'
+-import { describe, expect, it, vi } from 'vitest'
++import { describe, expect, it } from 'vitest'
+ 
+ import { StatusRule } from '../components/appChrome.js'
+ import { DEFAULT_THEME } from '../theme.js'
+@@ -26,14 +26,16 @@ const textContent = (node: ReactNodeLike): string => {
+   return ''
+ }
+ 
+-const findClickableWithText = (node: ReactNodeLike, needle: string): React.ReactElement | null => {
++// Find the innermost element whose own (direct) text content includes the
++// needle. Used to assert the colour a segment is rendered with.
++const findElementWithText = (node: ReactNodeLike, needle: string): React.ReactElement | null => {
+   if (node === null || node === undefined || typeof node === 'boolean') {
+     return null
+   }
+ 
+   if (Array.isArray(node)) {
+     for (const child of node) {
+-      const found = findClickableWithText(child, needle)
++      const found = findElementWithText(child, needle)
+ 
+       if (found) {
+         return found
+@@ -47,23 +49,27 @@ const findClickableWithText = (node: ReactNodeLike, needle: string): React.React
+     return null
+   }
+ 
+-  if (typeof node.props.onClick === 'function' && textContent(node).includes(needle)) {
+-    return node
++  // Prefer the deepest matching element so we get the leaf <Text> that
++  // actually carries the colour, not an ancestor Box.
++  const deeper = findElementWithText(node.props.children, needle)
++
++  if (deeper) {
++    return deeper
+   }
+ 
+-  return findClickableWithText(node.props.children, needle)
++  return textContent(node).includes(needle) ? node : null
+ }
+ 
+-// Find the innermost element whose own (direct) text content includes the
+-// needle. Used to assert the colour the session title is rendered with.
+-const findElementWithText = (node: ReactNodeLike, needle: string): React.ReactElement | null => {
++// Hook components (WaterTicker, TpsMeter, IdleSince) can't run outside a
++// renderer, so assert on the element tree instead.
++const findComponentByName = (node: ReactNodeLike, name: string): React.ReactElement | null => {
+   if (node === null || node === undefined || typeof node === 'boolean') {
+     return null
+   }
+ 
+   if (Array.isArray(node)) {
+     for (const child of node) {
+-      const found = findElementWithText(child, needle)
++      const found = findComponentByName(child, name)
+ 
+       if (found) {
+         return found
+@@ -77,29 +83,22 @@ const findElementWithText = (node: ReactNodeLike, needle: string): React.ReactEl
+     return null
+   }
+ 
+-  // Prefer the deepest matching element so we get the leaf <Text> that
+-  // actually carries the colour, not an ancestor Box.
+-  const deeper = findElementWithText(node.props.children, needle)
+-
+-  if (deeper) {
+-    return deeper
++  if (typeof node.type === 'function' && node.type.name === name) {
++    return node
+   }
+ 
+-  return textContent(node).includes(needle) ? node : null
++  return findComponentByName(node.props.children, name)
+ }
+ 
+ const baseProps = {
+   bgCount: 0,
+   busy: false,
+   cols: 100,
+-  cwdLabel: '~/repo',
+-  liveSessionCount: 0,
+   model: 'opus-4.8',
+   sessionStartedAt: null,
+   status: 'ready',
+   statusColor: DEFAULT_THEME.color.ok,
+   t: DEFAULT_THEME,
+-  turnStartedAt: null,
+   usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
+   voiceLabel: ''
+ }
+@@ -140,26 +139,19 @@ describe('StatusRule session title', () => {
+     }
+   })
+ 
+-  it('pins the named session at the far-right edge instead of the cwd label', () => {
++  it('keeps the session title, cwd and session count out of the rule', () => {
++    // These props were removed from the rule; a caller that still passes them
++    // must not get them rendered back (the session switcher shows them).
+     const element = StatusRule({
+       ...baseProps,
+-      sessionTitle: 'weekly-digest'
++      ...({ cwdLabel: '~/repo', liveSessionCount: 3, sessionTitle: 'weekly-digest' } as object)
+     })
+ 
+     const rendered = textContent(element)
+-    const title = findElementWithText(element, 'weekly-digest')
+ 
+-    expect(rendered).toContain('weekly-digest')
++    expect(rendered).not.toContain('weekly-digest')
+     expect(rendered).not.toContain('~/repo')
+-    // Regression for issue #82465: a raw, full-saturation accent-hue
+-    // background (e.g. #FFBF00 on DARK_SEEDS) paired with statusFg (a
+-    // near-white tone never designed to sit on it) rendered at roughly a
+-    // 1.5-2:1 contrast ratio -- unreadable. No background fill at all;
+-    // the accent color goes on the text instead, matching the theme's
+-    // own convention that a raw accent hue is never used as a solid
+-    // fill elsewhere (fills are always softened, e.g. activeRow).
+-    expect(title?.props.backgroundColor).toBeUndefined()
+-    expect(title?.props.color).toBe(DEFAULT_THEME.color.accent)
++    expect(rendered).not.toContain('3 sessions')
+   })
+ })
+ 
+@@ -195,7 +187,6 @@ describe('StatusRule background-subagent indicator', () => {
+     const element = StatusRule({
+       ...baseProps,
+       busy: true,
+-      turnStartedAt: Date.now(),
+       usage: { ...baseProps.usage, active_subagents: 2 }
+     })
+ 
+@@ -223,48 +214,17 @@ describe('StatusRule background-subagent indicator', () => {
+   })
+ })
+ 
+-describe('StatusRule session count click target', () => {
+-  it('makes the live session count itself clickable', () => {
+-    const openSwitcher = vi.fn()
+-
+-    const element = StatusRule({
+-      bgCount: 0,
+-      busy: false,
+-      cols: 100,
+-      cwdLabel: '~/repo',
+-      liveSessionCount: 1,
+-      model: 'kimi-k2.6',
+-      onSessionCountClick: openSwitcher,
+-      sessionStartedAt: null,
+-      status: 'ready',
+-      statusColor: DEFAULT_THEME.color.ok,
+-      t: DEFAULT_THEME,
+-      turnStartedAt: null,
+-      usage: { total: 0 },
+-      voiceLabel: ''
+-    })
+-
+-    const clickableSessionCount = findClickableWithText(element, '1 session')
+-
+-    expect(clickableSessionCount).not.toBeNull()
+-    clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
+-    expect(openSwitcher).toHaveBeenCalledOnce()
+-  })
+-
+-  it('keeps status + model and drops the low-value tail on a narrow terminal', () => {
++describe('StatusRule narrow-terminal essentials', () => {
++  it('keeps water + model + context and drops the low-value tail on a narrow terminal', () => {
+     const element = StatusRule({
+       bgCount: 0,
+       busy: false,
+       cols: 44,
+-      cwdLabel: '~/src/hermes-agent/apps/desktop (bb/tui-statusbar-responsive)',
+-      liveSessionCount: 3,
+       model: 'opus-4.8',
+-      onSessionCountClick: vi.fn(),
+       sessionStartedAt: Date.now() - 60_000,
+       status: 'ready',
+       statusColor: DEFAULT_THEME.color.ok,
+       t: DEFAULT_THEME,
+-      turnStartedAt: null,
+       usage: {
+         calls: 0,
+         context_max: 200_000,
+@@ -279,11 +239,14 @@ describe('StatusRule session count click target', () => {
+ 
+     const rendered = textContent(element)
+ 
+-    // Must-keep essentials survive intact …
+-    expect(rendered).toContain('ready')
++    // Must-keep essentials survive intact (the water body is the activity
++    // signal, so the idle "ready" label is gone) …
++    expect(rendered).not.toContain('ready')
+     expect(rendered).toContain('opus 4.8')
+-    // … while the low-value tail (session count) is dropped, not truncated.
+-    expect(rendered).not.toContain('3 sessions')
++    expect(rendered).toContain('50k tok')
++    expect(findComponentByName(element, 'WaterTicker')?.props.cells).toBe(6)
++    // … while the low-value tail is dropped, not truncated.
++    expect(rendered).not.toContain('voice')
+   })
+ })
+ 
+@@ -304,12 +267,11 @@ describe('StatusRule credits notice render priority', () => {
+     expect(rendered).toContain('50k')
+   })
+ 
+-  it('busy wins: the FaceTicker shows, the notice is hidden mid-turn', () => {
++  it('busy wins: the notice is hidden mid-turn', () => {
+     const element = StatusRule({
+       ...baseProps,
+       busy: true,
+-      notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: '⚠ 90% used' },
+-      turnStartedAt: Date.now()
++      notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: '⚠ 90% used' }
+     })
+ 
+     const rendered = textContent(element)
+@@ -357,37 +319,6 @@ describe('StatusRule battery indicator', () => {
+ })
+ 
+ describe('StatusRule idle-since read-out', () => {
+-  // The IdleSince component uses hooks, so it can't be invoked outside a
+-  // renderer — assert on the element tree instead (same reason the duration
+-  // tests don't check SessionDuration's text).
+-  const findComponentByName = (node: ReactNodeLike, name: string): React.ReactElement | null => {
+-    if (node === null || node === undefined || typeof node === 'boolean') {
+-      return null
+-    }
+-
+-    if (Array.isArray(node)) {
+-      for (const child of node) {
+-        const found = findComponentByName(child, name)
+-
+-        if (found) {
+-          return found
+-        }
+-      }
+-
+-      return null
+-    }
+-
+-    if (!React.isValidElement(node)) {
+-      return null
+-    }
+-
+-    if (typeof node.type === 'function' && node.type.name === name) {
+-      return node
+-    }
+-
+-    return findComponentByName(node.props.children, name)
+-  }
+-
+   it('shows time since the last final agent response when idle', () => {
+     const endedAt = Date.now() - 42_000
+ 
+@@ -407,8 +338,7 @@ describe('StatusRule idle-since read-out', () => {
+     const element = StatusRule({
+       ...baseProps,
+       busy: true,
+-      lastTurnEndedAt: Date.now() - 42_000,
+-      turnStartedAt: Date.now()
++      lastTurnEndedAt: Date.now() - 42_000
+     })
+ 
+     expect(findComponentByName(element, 'IdleSince')).toBeNull()
+@@ -442,7 +372,9 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
+ 
+     expect(rendered).toContain('◎ 87%')
+     expect(rendered).toContain('◷ 3.2s')
+-    expect(rendered).toContain('↑ 50 t/s')
++    // The live meter falls back to the server's rolling avg_tps until the
++    // first streamed delta arrives.
++    expect(findComponentByName(element, 'TpsMeter')?.props.fallback).toBe(50.4)
+   })
+ 
+   it('self-hides when the server omits the keys', () => {
+@@ -451,7 +383,7 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
+ 
+     expect(rendered).not.toContain('◎')
+     expect(rendered).not.toContain('◷')
+-    expect(rendered).not.toContain('t/s')
++    expect(findComponentByName(element, 'TpsMeter')?.props.fallback).toBeUndefined()
+   })
+ 
+   it('honors the display.status_bar.fields visibility filter', () => {
+@@ -466,17 +398,73 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
+ 
+     expect(rendered).toContain('◎ 87%')
+     expect(rendered).not.toContain('◷')
+-    expect(rendered).not.toContain('t/s')
++    expect(findComponentByName(element, 'TpsMeter')).toBeNull()
+   })
++})
+ 
+-  it('hides the session title badge when the fields filter omits title', () => {
+-    const element = StatusRule({
+-      ...baseProps,
+-      cols: 160,
+-      sessionTitle: 'weekly-digest',
+-      statusBarFields: new Set(['model', 'context_pct'])
+-    })
++describe('StatusRule sleek chrome', () => {
++  it('starts with the water body: no leading border dash', () => {
++    const element = StatusRule({ ...baseProps })
++
++    expect(textContent(element).startsWith('─')).toBe(false)
++    expect(findComponentByName(element, 'WaterTicker')?.props.cells).toBe(25)
++  })
++
++  it('keeps the water body mounted at the same width when idle and busy', () => {
++    for (const busy of [false, true]) {
++      const water = findComponentByName(StatusRule({ ...baseProps, busy }), 'WaterTicker')
++
++      expect(water?.props).toMatchObject({ busy, cells: 25 })
++    }
++  })
++
++  it('pins context and TPS in the right-aligned group with no leading separator', () => {
++    const rendered = textContent(StatusRule({ ...baseProps }))
++
++    expect(rendered).toContain('50k/200k')
++    expect(rendered).not.toContain('│ 50k/200k')
++    expect(findComponentByName(StatusRule({ ...baseProps }), 'TpsMeter')?.props.lead).toBe(true)
++  })
++
++  it('colours the context number at the old bar thresholds (80% warn, 95% critical)', () => {
++    const colorAt = (context_used: number) =>
++      findElementWithText(
++        StatusRule({ ...baseProps, usage: { context_max: 200_000, context_used, total: context_used } }),
++        `${context_used / 1000}k/200k`
++      )?.props.color
++
++    expect(colorAt(150_000)).toBe('#6B7280')
++    expect(colorAt(158_000)).toBe('#6B7280')
++    expect(colorAt(160_000)).toBe(DEFAULT_THEME.color.statusWarn)
++    expect(colorAt(188_000)).toBe(DEFAULT_THEME.color.statusWarn)
++    expect(colorAt(190_000)).toBe(DEFAULT_THEME.color.statusCritical)
++    // The server's own percent wins over the derived one.
++    expect(
++      findElementWithText(StatusRule({ ...baseProps, usage: { ...baseProps.usage, context_percent: 96 } }), '50k/200k')
++        ?.props.color
++    ).toBe(DEFAULT_THEME.color.statusCritical)
++  })
++
++  it('drops the context fill bar and percent', () => {
++    const rendered = textContent(StatusRule({ ...baseProps }))
++
++    expect(rendered).not.toContain('█')
++    expect(rendered).not.toContain('25%')
++  })
++
++  it('shows unknown occupancy as "–" instead of fabricating 0', () => {
++    // A resumed session before its next turn has NO context_used.
++    const element = StatusRule({ ...baseProps, usage: { ...baseProps.usage, context_used: undefined } })
++
++    expect(textContent(element)).toContain('–/200k')
++    expect(textContent(element)).not.toContain('0/200k')
++  })
+ 
+-    expect(textContent(element)).not.toContain('weekly-digest')
++  it('shows a non-ready idle status and compaction, never the idle "ready" label', () => {
++    expect(textContent(StatusRule({ ...baseProps }))).not.toContain('ready')
++    expect(textContent(StatusRule({ ...baseProps, status: 'summoning hermes…' }))).toContain('summoning hermes')
++    expect(textContent(StatusRule({ ...baseProps, busy: true, compacting: true }))).toContain('compacting')
++    // A busy turn's verb ("running…") stays out: the water carries it.
++    expect(textContent(StatusRule({ ...baseProps, busy: true, status: 'running…' }))).not.toContain('running')
+   })
+ })
+diff --git a/ui-tui/src/__tests__/canonicalSlashCommands.test.ts b/ui-tui/src/__tests__/canonicalSlashCommands.test.ts
+index 73f28a14ac..520c0fcd60 100644
+--- a/ui-tui/src/__tests__/canonicalSlashCommands.test.ts
++++ b/ui-tui/src/__tests__/canonicalSlashCommands.test.ts
+@@ -424,7 +424,9 @@ it('/theme and /indicator write the profile through the owner\'s config.set like
+ 
+   const notices = sys.mock.calls.map(([text]) => String(text))
+ 
+-  expect(notices).toEqual(expect.arrayContaining(['theme → dark', 'indicator → ascii']))
++  expect(notices).toEqual(
++    expect.arrayContaining(['theme → dark', 'indicator → ascii (the sleek status rule does not use the indicator style)'])
++  )
+   expect(notices.some(line => /not available/.test(line))).toBe(false)
+   expect(getUiState().indicatorStyle).toBe('ascii')
+ })
+diff --git a/ui-tui/src/__tests__/createGatewayEventHandler.test.ts b/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
+index 0f48af0132..a267a1d095 100644
+--- a/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
++++ b/ui-tui/src/__tests__/createGatewayEventHandler.test.ts
+@@ -10,9 +10,11 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+ import { createServerRequestHandler } from '../app/createServerRequestHandler.js'
+ import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+ import { resetServerRequestsForTests } from '../app/serverRequestStore.js'
++import { $tpsTarget, resetTps } from '../app/tpsStore.js'
+ import { turnController } from '../app/turnController.js'
+ import { getTurnState, resetTurnState } from '../app/turnStore.js'
+ import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
++import { $wavePulse } from '../app/wavePulseStore.js'
+ import { ZERO } from '../domain/usage.js'
+ import { estimateTokensRough } from '../lib/text.js'
+ import type { Msg } from '../types.js'
+@@ -91,6 +93,7 @@ describe('createGatewayEventHandler', () => {
+     resetTurnState()
+     resetServerRequestsForTests()
+     resetConnectionOperationsForTests()
++    resetTps()
+     turnController.fullReset()
+     patchUiState({ showReasoning: true })
+   })
+@@ -2418,4 +2421,80 @@ describe('createGatewayEventHandler', () => {
+       })
+     })
+   })
++
++  describe('status-rule feeds', () => {
++    const streamAt = (onEvent: ReturnType<typeof createGatewayEventHandler>, type: string, sessionId: string) => {
++      vi.advanceTimersByTime(300)
++      onEvent({ payload: { text: 'a streamed chunk of model output. ' }, session_id: sessionId, type } as any)
++    }
++
++    it('feeds the TPS meter from streamed message.delta and reasoning.delta text', () => {
++      vi.useFakeTimers()
++
++      try {
++        for (const type of ['message.delta', 'reasoning.delta']) {
++          resetTps()
++          const onEvent = createGatewayEventHandler(buildCtx([]))
++          patchUiState({ sid: 's1' })
++
++          streamAt(onEvent, type, 's1')
++          expect($tpsTarget.get()).toBe(0)
++          streamAt(onEvent, type, 's1')
++          streamAt(onEvent, type, 's1')
++
++          expect($tpsTarget.get(), type).toBeGreaterThan(0)
++        }
++      } finally {
++        vi.useRealTimers()
++      }
++    })
++
++    it('restarts the TPS meter when deltas arrive for a different session', () => {
++      vi.useFakeTimers()
++
++      try {
++        const onEvent = createGatewayEventHandler(buildCtx([]))
++
++        streamAt(onEvent, 'message.delta', 'a')
++        streamAt(onEvent, 'message.delta', 'a')
++        expect($tpsTarget.get()).toBeGreaterThan(0)
++
++        // The UI switched to session b; its first delta resets the meter so
++        // the old rate cannot bleed in.
++        streamAt(onEvent, 'message.delta', 'b')
++        expect($tpsTarget.get()).toBe(0)
++      } finally {
++        vi.useRealTimers()
++      }
++    })
++
++    it('drops the old rate as soon as ui.sid changes (/resume, /new, Ctrl+X)', () => {
++      vi.useFakeTimers()
++
++      try {
++        const onEvent = createGatewayEventHandler(buildCtx([]))
++        patchUiState({ sid: 'old' })
++
++        streamAt(onEvent, 'message.delta', 'old')
++        streamAt(onEvent, 'message.delta', 'old')
++        expect($tpsTarget.get()).toBeGreaterThan(0)
++
++        // No delta from the new session yet: the switch alone resets it.
++        patchUiState({ sid: 'new' })
++        expect($tpsTarget.get()).toBe(0)
++      } finally {
++        vi.useRealTimers()
++      }
++    })
++
++    it('plays one water splash per tool.start', () => {
++      const onEvent = createGatewayEventHandler(buildCtx([]))
++      const before = $wavePulse.get()
++
++      onEvent({ payload: { name: 'terminal', tool_id: 't1' }, type: 'tool.start' } as any)
++      onEvent({ payload: { name: 'read_file', tool_id: 't2' }, type: 'tool.start' } as any)
++
++      expect($wavePulse.get()).toBe(before + 2)
++    })
++  })
+ })
+diff --git a/ui-tui/src/__tests__/createSlashHandler.test.ts b/ui-tui/src/__tests__/createSlashHandler.test.ts
+index bf11419878..9c0f4cc572 100644
+--- a/ui-tui/src/__tests__/createSlashHandler.test.ts
++++ b/ui-tui/src/__tests__/createSlashHandler.test.ts
+@@ -758,6 +758,21 @@ describe('createSlashHandler', () => {
+     await vi.waitFor(() => expect(getUiState().indicatorStyle).toBe('emoji'))
+   })
+ 
++  it('tells the user the sleek status rule does not use the indicator style', async () => {
++    for (const [command, value] of [
++      ['/indicator emoji', 'emoji'],
++      ['/indicator', 'ascii']
++    ] as const) {
++      const rpc = vi.fn(() => Promise.resolve({ value }))
++      const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
++
++      expect(createSlashHandler(ctx)(command)).toBe(true)
++      await vi.waitFor(() =>
++        expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('sleek status rule does not use'))
++      )
++    }
++  })
++
+   it('rejects unknown indicator styles before hitting the gateway', () => {
+     const rpc = vi.fn(() => Promise.resolve({}))
+     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+diff --git a/ui-tui/src/__tests__/statusBarTicker.test.ts b/ui-tui/src/__tests__/statusBarTicker.test.ts
+deleted file mode 100644
+index 4f3369bfa3..0000000000
+--- a/ui-tui/src/__tests__/statusBarTicker.test.ts
++++ /dev/null
+@@ -1,18 +0,0 @@
+-import { describe, expect, it } from 'vitest'
+-
+-import { padVerb, VERB_PAD_LEN } from '../components/appChrome.js'
+-import { VERBS } from '../content/verbs.js'
+-
+-describe('FaceTicker verb padding', () => {
+-  it('pads every verb to the same width', () => {
+-    for (const verb of VERBS) {
+-      expect(padVerb(verb)).toHaveLength(VERB_PAD_LEN)
+-    }
+-  })
+-
+-  it('keeps trailing ellipsis attached', () => {
+-    for (const verb of VERBS) {
+-      expect(padVerb(verb).startsWith(`${verb}…`)).toBe(true)
+-    }
+-  })
+-})
+diff --git a/ui-tui/src/__tests__/statusRule.test.ts b/ui-tui/src/__tests__/statusRule.test.ts
+index 3fad1f0250..c1127b796a 100644
+--- a/ui-tui/src/__tests__/statusRule.test.ts
++++ b/ui-tui/src/__tests__/statusRule.test.ts
+@@ -1,61 +1,6 @@
+ import { describe, expect, it } from 'vitest'
+ 
+-import { busyIndicatorWidth, statusBarSegments, statusRuleWidths } from '../components/appChrome.js'
+-
+-describe('statusRuleWidths', () => {
+-  it('keeps the status rule within the terminal width', () => {
+-    for (const cols of [8, 12, 20, 40, 100]) {
+-      const widths = statusRuleWidths(cols, '~/src/hermes-agent/main (some-long-branch-name)')
+-
+-      expect(widths.leftWidth + widths.separatorWidth + widths.rightWidth).toBeLessThanOrEqual(cols)
+-      expect(widths.leftWidth).toBeGreaterThan(0)
+-    }
+-  })
+-
+-  it('truncates the cwd segment before it can wrap in skinny terminals', () => {
+-    const widths = statusRuleWidths(24, '~/src/hermes-agent/main (bb/some-extremely-long-branch)')
+-
+-    expect(widths.rightWidth).toBeLessThan('~/src/hermes-agent/main (bb/some-extremely-long-branch)'.length)
+-    expect(widths.leftWidth).toBeGreaterThanOrEqual(8)
+-  })
+-
+-  it('omits the cwd segment when there is no room for it', () => {
+-    expect(statusRuleWidths(2, 'abcdef')).toEqual({ leftWidth: 2, rightWidth: 0, separatorWidth: 0 })
+-  })
+-
+-  it('budgets the cwd segment by display width, not utf-16 length', () => {
+-    const widths = statusRuleWidths(30, '目录/分支')
+-
+-    expect(widths.leftWidth + widths.separatorWidth + widths.rightWidth).toBeLessThanOrEqual(30)
+-    expect(widths.rightWidth).toBeGreaterThan('目录/分支'.length)
+-  })
+-
+-  it('reserves the high-priority left content so the cwd/branch yields first', () => {
+-    const cwd = '~/src/hermes-agent/apps/desktop (bb/tui-statusbar-responsive)'
+-
+-    const greedy = statusRuleWidths(70, cwd) // legacy behaviour: cwd hogs the row
+-    const reserved = statusRuleWidths(70, cwd, 40) // reserve indicator+model+ctx
+-
+-    expect(reserved.leftWidth).toBeGreaterThanOrEqual(40)
+-    expect(reserved.leftWidth).toBeGreaterThan(greedy.leftWidth)
+-    expect(reserved.rightWidth).toBeLessThan(greedy.rightWidth)
+-    expect(reserved.leftWidth + reserved.separatorWidth + reserved.rightWidth).toBeLessThanOrEqual(70)
+-  })
+-
+-  it('drops the cwd entirely when the essential left content needs the whole row', () => {
+-    expect(statusRuleWidths(40, '~/some/cwd (branch)', 60)).toEqual({
+-      leftWidth: 40,
+-      rightWidth: 0,
+-      separatorWidth: 0
+-    })
+-  })
+-
+-  it('keeps the default (no reservation) behaviour identical for legacy callers', () => {
+-    const cwd = '~/src/hermes-agent/main (some-long-branch-name)'
+-
+-    expect(statusRuleWidths(80, cwd, 0)).toEqual(statusRuleWidths(80, cwd))
+-  })
+-})
++import { statusBarSegments, WATER_CELL_COUNT, waterCellCount } from '../components/appChrome.js'
+ 
+ describe('statusBarSegments', () => {
+   it('shows every segment on a wide terminal', () => {
+@@ -65,26 +10,31 @@ describe('statusBarSegments', () => {
+     expect(Object.values(segments).every(Boolean)).toBe(true)
+   })
+ 
+-  it('sheds cache/latency/tps read-outs first as the terminal narrows', () => {
+-    // 96/104/110-col breakpoints: these are the lowest-priority perf
+-    // read-outs, so they disappear before any pre-existing segment.
+-    expect(statusBarSegments(108)).toMatchObject({ cacheHit: true, latency: true, tps: false })
+-    expect(statusBarSegments(100)).toMatchObject({ cacheHit: true, latency: false, tps: false })
+-    expect(statusBarSegments(94)).toMatchObject({ cacheHit: false, latency: false, tps: false, subagents: true })
++  it('sheds cache/latency read-outs first as the terminal narrows', () => {
++    // 96/104-col breakpoints: these are the lowest-priority perf read-outs,
++    // so they disappear before any pre-existing segment.
++    expect(statusBarSegments(100)).toMatchObject({ cacheHit: true, latency: false })
++    expect(statusBarSegments(94)).toMatchObject({ cacheHit: false, latency: false, subagents: true })
++  })
++
++  it('keeps the live TPS read-out down to 76 cols, past every tail segment', () => {
++    expect(statusBarSegments(94)).toMatchObject({ bg: true, tps: true })
++    expect(statusBarSegments(76)).toMatchObject({ compressions: false, tps: true })
++    expect(statusBarSegments(75)).toMatchObject({ compactCtx: false, tps: false })
+   })
+ 
+-  it('collapses the context bar to a token count on narrow terminals', () => {
++  it('collapses the context read-out to a token count on narrow terminals', () => {
+     const s = statusBarSegments(60)
+ 
+     expect(s.compactCtx).toBe(true)
+-    expect(s.bar).toBe(false)
+     expect(s.duration).toBe(false)
++    expect(s.tps).toBe(false)
+   })
+ 
+   it('sheds tail segments in priority order as the terminal narrows', () => {
+-    // the context bar is the last of the tail to go.
++    // TPS is the last of the tail to go.
+     const order: (keyof ReturnType<typeof statusBarSegments>)[] = [
+-      'bar',
++      'tps',
+       'duration',
+       'compressions',
+       'voice',
+@@ -104,16 +54,17 @@ describe('statusBarSegments', () => {
+   })
+ })
+ 
+-describe('busyIndicatorWidth', () => {
+-  it('reserves a bare spinner for the verb-less unicode style', () => {
+-    // unicode is a 1-col braille spinner with no verb; far slimmer than the
+-    // kaomoji face which carries a wide glyph + rotating verb.
+-    expect(busyIndicatorWidth('unicode', false)).toBeLessThan(busyIndicatorWidth('kaomoji', false))
++describe('waterCellCount', () => {
++  it('keeps the full 25-cell body on any normal terminal', () => {
++    for (const cols of [72, 80, 120, 300]) {
++      expect(waterCellCount(cols)).toBe(WATER_CELL_COUNT)
++    }
+   })
+ 
+-  it('reserves room for the elapsed-time tail only when a turn is timed', () => {
+-    for (const style of ['kaomoji', 'emoji', 'ascii', 'unicode'] as const) {
+-      expect(busyIndicatorWidth(style, true)).toBeGreaterThan(busyIndicatorWidth(style, false))
+-    }
++  it('shrinks only on narrow terminals so the model and context keep room', () => {
++    expect(waterCellCount(71)).toBe(12)
++    expect(waterCellCount(52)).toBe(12)
++    expect(waterCellCount(51)).toBe(6)
++    expect(waterCellCount(0)).toBe(6)
+   })
+ })
+diff --git a/ui-tui/src/__tests__/tps.test.ts b/ui-tui/src/__tests__/tps.test.ts
+new file mode 100644
+index 0000000000..06d7a1c63f
+--- /dev/null
++++ b/ui-tui/src/__tests__/tps.test.ts
+@@ -0,0 +1,217 @@
++import { describe, expect, it } from 'vitest'
++
++import {
++  CHARS_PER_TOKEN,
++  createTpsTracker,
++  EMA_ALPHA,
++  formatTps,
++  MAX_INSTANT_TPS,
++  MIN_TPS_SAMPLE_MS,
++  OUTLIER_DAMP_FACTOR,
++  STALE_WINDOW_MS
++} from '../lib/tps.js'
++
++// Deterministic clock: the tracker accepts an explicit `now`, so tests drive
++// time without fake timers.
++let clock = 0
++const now = () => clock
++
++const advance = (ms: number) => {
++  clock += ms
++}
++
++// Feed `ticks` samples of `charsPerTick` chars, each spaced just past the
++// minimum measurement window. Each tick constitutes its own measurement
++// window (pending resets after every emit), so the steady state converges on
++// `charsPerTick / CHARS_PER_TOKEN` tokens per `spacingMs`.
++const feedCharsAtRate = (
++  tracker: ReturnType<typeof createTpsTracker>,
++  charsPerTick: number,
++  ticks: number,
++  spacingMs: number = MIN_TPS_SAMPLE_MS + 10
++) => {
++  for (let i = 0; i < ticks; i += 1) {
++    advance(spacingMs)
++    tracker.sample(charsPerTick, now())
++  }
++}
++
++describe('createTpsTracker', () => {
++  it('reads 0 before any sample', () => {
++    const tracker = createTpsTracker()
++
++    expect(tracker.read()).toBe(0)
++  })
++
++  it('seeds the clock on the first sample and emits nothing', () => {
++    const tracker = createTpsTracker()
++    tracker.sample(100, now())
++
++    expect(tracker.read()).toBe(0)
++  })
++
++  it('measures the first window including its seed tokens', () => {
++    const tracker = createTpsTracker()
++
++    // Seed: 200 chars → 50 tokens arrive at t=0 (window start while seeding).
++    tracker.sample(200, now())
++    // 1s later 400 chars → +100 tokens: 150 tokens / 1s = 150 t/s.
++    advance(1000)
++    tracker.sample(400, now())
++
++    expect(tracker.read()).toBeCloseTo(150, 0)
++  })
++
++  it('accumulates rapid sub-window samples before emitting', () => {
++    const tracker = createTpsTracker()
++    tracker.sample(120, now()) // +30 tokens (seed)
++    advance(50)
++    tracker.sample(160, now()) // +40 tokens
++    advance(50)
++    tracker.sample(200, now()) // +50 tokens → 120 pending in 100ms
++
++    expect(tracker.read()).toBe(0)
++
++    // 500ms later one more sample fires the window: 130 tokens / 0.6s ≈ 217.
++    advance(500)
++    tracker.sampleTokens(10, now())
++    expect(tracker.read()).toBeCloseTo(130 / (600 / 1000), 0)
++  })
++
++  it('EMA-smooths a steady stream toward the true rate, capped below the burst limit', () => {
++    const tracker = createTpsTracker()
++
++    // 200 chars (50 tokens) per 260ms ≈ 192 t/s sustained — the second
++    // window includes the seed tokens, so the readout converges toward 192
++    // from above and never exceeds MAX_INSTANT_TPS.
++    feedCharsAtRate(tracker, 200, 8)
++
++    const rate = tracker.read()
++    expect(rate).toBeGreaterThan(0)
++    expect(rate).toBeLessThanOrEqual(MAX_INSTANT_TPS)
++  })
++
++  it('damps outlier bursts harder than steady samples', () => {
++    const tracker = createTpsTracker()
++    // Small steady stream: 100 chars (25 tokens) per 260ms ≈ 96 t/s. After
++    // 12 ticks the EMA has converged to ~98.
++    feedCharsAtRate(tracker, 100, 12)
++    const steady = tracker.read()
++    expect(steady).toBeLessThan(130)
++
++    // One 3× burst (300 chars) in a single tick → instant ≈ 288 t/s, which
++    // is more than 2× the steady value — the damped alpha must apply.
++    advance(MIN_TPS_SAMPLE_MS + 10)
++    tracker.sample(300, now())
++
++    const instantRate = 75 / ((MIN_TPS_SAMPLE_MS + 10) / 1000)
++    const undamped = steady * (1 - EMA_ALPHA) + instantRate * EMA_ALPHA
++    const damped = steady * (1 - EMA_ALPHA * OUTLIER_DAMP_FACTOR) + instantRate * EMA_ALPHA * OUTLIER_DAMP_FACTOR
++
++    expect(tracker.read()).toBeCloseTo(damped, 0)
++    expect(tracker.read()).toBeLessThan(undamped)
++    expect(tracker.read()).toBeGreaterThan(steady)
++  })
++
++  it('freezes across a stale gap (tool execution) instead of dividing by idle time', () => {
++    const tracker = createTpsTracker()
++    feedCharsAtRate(tracker, 200, 2)
++    const before = tracker.read()
++    expect(before).toBeGreaterThan(0)
++
++    // Tool loop: no samples for longer than STALE_WINDOW_MS.
++    advance(STALE_WINDOW_MS + 5000)
++    tracker.sample(200, now())
++
++    // The gap must not drag the rate down — the value holds (the window is
++    // restarted, so the post-gap sample is measured on its own).
++    expect(tracker.read()).toBe(before)
++
++    // The next stream after the gap keeps measuring from the fresh window.
++    feedCharsAtRate(tracker, 200, 4)
++    expect(tracker.read()).toBeGreaterThan(0)
++  })
++
++  it('reset drops the smoothed value and restarts measurement', () => {
++    const tracker = createTpsTracker()
++    feedCharsAtRate(tracker, 200, 2)
++    expect(tracker.read()).toBeGreaterThan(0)
++
++    tracker.reset()
++    expect(tracker.read()).toBe(0)
++
++    // First sample after reset only re-seeds the clock.
++    tracker.sample(200, now())
++    expect(tracker.read()).toBe(0)
++  })
++
++  it('ignores non-positive samples but lets their ticks fire the window', () => {
++    const tracker = createTpsTracker()
++    tracker.sample(0, now())
++    tracker.sample(-10, now())
++    tracker.sampleTokens(0, now())
++
++    expect(tracker.read()).toBe(0)
++  })
++
++  it('sampleTokens feeds exact token counts through the same EMA', () => {
++    const tracker = createTpsTracker()
++    feedCharsAtRate(tracker, 200, 3)
++    const before = tracker.read()
++
++    advance(MIN_TPS_SAMPLE_MS + 10)
++    tracker.sampleTokens(1000, now())
++
++    expect(tracker.read()).toBeGreaterThan(before)
++  })
++
++  it('converts chars to tokens with the 4:1 heuristic', () => {
++    const tracker = createTpsTracker()
++    tracker.sample(400, now()) // seed: 100 tokens
++    advance(1000)
++    tracker.sample(4, now()) // +1 token, fires a 1s window
++
++    expect(tracker.read()).toBeCloseTo(101 / (1000 / 1000), 0)
++    expect(tracker.read()).toBeCloseTo(400 / CHARS_PER_TOKEN + 1, 0)
++  })
++})
++
++describe('small streamed deltas', () => {
++  // A known 50 t/s stream = 200 chars/s. Deltas of 1 or 2 chars must not each
++  // round up to a whole token (that read 200 and 100 t/s).
++  for (const [chars, spacingMs] of [
++    [1, 5],
++    [2, 10]
++  ] as const) {
++    it(`reads ~50 t/s from ${chars}-char deltas at 200 chars/s`, () => {
++      const tracker = createTpsTracker()
++
++      for (let elapsed = 0; elapsed <= 3000; elapsed += spacingMs) {
++        advance(spacingMs)
++        tracker.sample(chars, now())
++      }
++
++      expect(tracker.read()).toBeGreaterThan(48)
++      expect(tracker.read()).toBeLessThan(52)
++    })
++  }
++})
++
++describe('formatTps', () => {
++  it('formats with one decimal, padded to a fixed 5-char width', () => {
++    expect(formatTps(45.234)).toBe(' 45.2 t/s')
++    expect(formatTps(9.8)).toBe('  9.8 t/s')
++    expect(formatTps(300)).toBe('300.0 t/s')
++    expect(formatTps(0.05)).toBe('  0.1 t/s')
++  })
++
++  it('renders a placeholder for absent values', () => {
++    expect(formatTps(0)).toBe('----- t/s')
++    expect(formatTps(-1)).toBe('----- t/s')
++  })
++
++  it('keeps constant width so surrounding status text never shifts', () => {
++    const widths = new Set(['0.05', '9.8', '45.2', '300'].map(v => formatTps(Number(v)).length))
++    expect(widths.size).toBe(1)
++  })
++})
+diff --git a/ui-tui/src/__tests__/waterPulse.test.ts b/ui-tui/src/__tests__/waterPulse.test.ts
+new file mode 100644
+index 0000000000..09e8049cec
+--- /dev/null
++++ b/ui-tui/src/__tests__/waterPulse.test.ts
+@@ -0,0 +1,142 @@
++import { describe, expect, it } from 'vitest'
++
++import { $wavePulse, pulseWave } from '../app/wavePulseStore.js'
++import {
++  freshWavePeaks,
++  pointedCrestOffset,
++  quantizeWaterHeight,
++  splashClockAt,
++  WATER_CELL_COUNT,
++  WATER_FRAME_MS,
++  WATER_SPLASH_MS,
++  waterFrame,
++  waterFrameStep,
++  waterSplashLift
++} from '../components/appChrome.js'
++
++describe('water drift cadence', () => {
++  it('adds a narrow crest needle without moving troughs or broad shoulders', () => {
++    expect(pointedCrestOffset(0.8)).toBe(0)
++    expect(pointedCrestOffset(-1)).toBeCloseTo(-0.25)
++    expect(Math.abs(pointedCrestOffset(-0.5))).toBeLessThan(0.01)
++  })
++
++  it('holds the previous Braille row inside a small quantization deadband', () => {
++    expect(quantizeWaterHeight(2.49)).toBe(2)
++    expect(quantizeWaterHeight(2.51)).toBe(3)
++    expect(quantizeWaterHeight(2.6, 2)).toBe(2)
++    expect(quantizeWaterHeight(2.7, 2)).toBe(3)
++    expect(quantizeWaterHeight(2.4, 3)).toBe(3)
++    expect(quantizeWaterHeight(2.3, 3)).toBe(2)
++  })
++
++  it('keeps one render cadence while TPS changes phase velocity', () => {
++    expect(WATER_FRAME_MS).toBe(60)
++    expect(waterFrameStep(-5)).toBe(2)
++    expect(waterFrameStep(0)).toBe(2)
++    expect(waterFrameStep(15)).toBe(3)
++    expect(waterFrameStep(200)).toBe(3)
++  })
++
++  it('is deterministic per frame and advances with the frame', () => {
++    expect(waterFrame(5)).toBe(waterFrame(5))
++    expect(waterFrame(5)).not.toBe(waterFrame(6))
++  })
++
++  it('always renders the full water body width', () => {
++    for (const frame of [0, 1, 7, 42]) {
++      expect(waterFrame(frame)).toHaveLength(WATER_CELL_COUNT)
++    }
++  })
++})
++
++describe('water splash physics', () => {
++  it('derives splash lifetime from wall time and deactivates at the exact boundary', () => {
++    expect(splashClockAt(1_000, 1_000)).toBe(0)
++    expect(splashClockAt(1_000, 1_899)).toBe(899)
++    expect(splashClockAt(1_000, 1_900)).toBe(-1)
++    expect(splashClockAt(1_000, 2_500)).toBe(-1)
++  })
++
++  it('starts as a localized impact and then sends a symmetric wake outward', () => {
++    const peaks = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 3)
++    const origin = WATER_CELL_COUNT
++    const early = { clock: 180, origin, peaks }
++    const travelling = { clock: 480, origin, peaks }
++
++    expect(waterSplashLift(origin, WATER_CELL_COUNT * 2, early)).toBeGreaterThan(
++      waterSplashLift(0, WATER_CELL_COUNT * 2, early)
++    )
++    expect(waterSplashLift(origin + 15, WATER_CELL_COUNT * 2, travelling)).toBeGreaterThan(
++      waterSplashLift(origin, WATER_CELL_COUNT * 2, travelling)
++    )
++    expect(waterSplashLift(origin - 15, WATER_CELL_COUNT * 2, travelling)).toBeCloseTo(
++      waterSplashLift(origin + 15, WATER_CELL_COUNT * 2, travelling)
++    )
++    expect(
++      waterSplashLift(origin, WATER_CELL_COUNT * 2, {
++        clock: WATER_SPLASH_MS,
++        origin,
++        peaks
++      })
++    ).toBe(0)
++  })
++
++  it('applies the initial impact locally instead of lifting the whole raster', () => {
++    const peaks = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 3)
++    const drift = waterFrame(0)
++
++    const impact = waterFrame(0, {
++      clock: 180,
++      origin: WATER_CELL_COUNT,
++      peaks
++    })
++
++    expect(impact[0]).toBe(drift[0])
++    expect(impact[12]).not.toBe(drift[12])
++    expect(impact[24]).toBe(drift[24])
++  })
++
++  it('builds a deterministic spatially correlated peak field from the pulse seed', () => {
++    const first = freshWavePeaks(50, 11)
++    const replay = freshWavePeaks(50, 11)
++    const nextPulse = freshWavePeaks(50, 12)
++
++    expect(first).toEqual(replay)
++    expect(first).not.toEqual(nextPulse)
++
++    for (let index = 1; index < first.length; index += 1) {
++      expect(Math.abs(first[index]! - first[index - 1]!)).toBeLessThan(0.8)
++    }
++  })
++
++  it('fresh peaks stay inside the splash range and cover every pixel', () => {
++    const peaks = freshWavePeaks()
++
++    expect(peaks).toHaveLength(WATER_CELL_COUNT * 2)
++
++    for (const peak of peaks) {
++      expect(peak).toBeGreaterThanOrEqual(1)
++      expect(peak).toBeLessThan(3.6)
++    }
++  })
++
++  it('returns exactly to the drifting surface when the wake has settled', () => {
++    const peaks = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 3.2)
++    const staleSurface = Array.from({ length: WATER_CELL_COUNT * 2 }, () => 0)
++    const drift = waterFrame(3)
++
++    expect(waterFrame(3, { peaks, clock: WATER_SPLASH_MS }, staleSurface)).toBe(drift)
++    expect(waterFrame(3, { peaks, clock: WATER_SPLASH_MS + 1000 }, staleSurface)).toBe(drift)
++  })
++})
++
++describe('wave pulse store', () => {
++  it('bumps once per pulse and keeps the count monotonic', () => {
++    $wavePulse.set(0)
++    pulseWave()
++    pulseWave()
++
++    expect($wavePulse.get()).toBe(2)
++  })
++})
+diff --git a/ui-tui/src/app/createGatewayEventHandler.ts b/ui-tui/src/app/createGatewayEventHandler.ts
+index 2244a44c6e..391ff08090 100644
+--- a/ui-tui/src/app/createGatewayEventHandler.ts
++++ b/ui-tui/src/app/createGatewayEventHandler.ts
+@@ -59,6 +59,7 @@ import { loadSlashCatalog, refreshSlashCatalogOnSkillsChange } from './slashCata
+ import { reportStartupLatency } from './startupLatency.js'
+ import { markNextSubmitVoice } from './submissionCore.js'
+ import { captureDestination, isCurrentDestination } from './submissionDestination.js'
++import { feedTpsChars } from './tpsStore.js'
+ import { turnController } from './turnController.js'
+ import { getTurnState } from './turnStore.js'
+ import { getUiState, patchUiState } from './uiStore.js'
+@@ -73,6 +74,7 @@ import {
+ } from './userMessages.js'
+ import { handleVoiceCapture } from './voicePartialStore.js'
+ import { isWakeUserDisabled } from './wakeState.js'
++import { pulseWave } from './wavePulseStore.js'
+ 
+ const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
+ 
+@@ -1487,6 +1489,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+ 
+       case 'reasoning.delta':
+         if (ev.payload?.text) {
++          // Reasoning streams feed the status-rule TPS meter too, so a long
++          // analysis keeps the read-out live. Metric only; the transcript path
++          // is untouched.
++          feedTpsChars(String(ev.payload.text).length, ev.session_id)
+           turnController.recordReasoningDelta(ev.payload.text, Boolean(ev.payload.verbose))
+         }
+ 
+@@ -1555,6 +1561,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+           return
+         }
+ 
++        // Every tool call plays one splash in the status-rule water body.
++        pulseWave()
++
+         turnController.recordToolStart(
+           ev.payload.tool_id,
+           ev.payload.name ?? 'tool',
+@@ -1815,6 +1824,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
+       }
+ 
+       case 'message.delta':
++        // The TPS meter reads the raw streamed `text` (the field
++        // recordMessageDelta consumes), never `rendered`, which carries ANSI.
++        feedTpsChars(String(ev.payload?.text ?? '').length, ev.session_id)
+         turnController.recordMessageDelta(ev.payload ?? ({} as MessageDeltaPayload))
+ 
+         return
+diff --git a/ui-tui/src/app/interfaces.ts b/ui-tui/src/app/interfaces.ts
+index e072aa32b4..16a9bb1e51 100644
+--- a/ui-tui/src/app/interfaces.ts
++++ b/ui-tui/src/app/interfaces.ts
+@@ -692,15 +692,12 @@ export interface AppLayoutProgressProps {
+ }
+ 
+ export interface AppLayoutStatusProps {
+-  cwdLabel: string
+   goodVibesTick: number
+   lastTurnEndedAt: null | number
+   sessionStartedAt: null | number
+-  sessionTitle: string
+   showStickyPrompt: boolean
+   statusColor: string
+   stickyPrompt: string
+-  turnStartedAt: null | number
+   voiceLabel: string
+ }
+ 
+diff --git a/ui-tui/src/app/slash/commands/session.ts b/ui-tui/src/app/slash/commands/session.ts
+index 2ee5cec3c1..2476c656c8 100644
+--- a/ui-tui/src/app/slash/commands/session.ts
++++ b/ui-tui/src/app/slash/commands/session.ts
+@@ -612,7 +612,7 @@ export const sessionCommands: SlashCommand[] = [
+   },
+ 
+   {
+-    help: 'pick the busy indicator: kaomoji (default), emoji, unicode (braille), or ascii',
++    help: 'set the saved busy indicator style (the sleek status rule does not use it)',
+     name: 'indicator',
+     usage: `/indicator [${INDICATOR_STYLES.join('|')}]`,
+     run: (arg, ctx) => {
+diff --git a/ui-tui/src/app/tpsStore.ts b/ui-tui/src/app/tpsStore.ts
+new file mode 100644
+index 0000000000..fdf5ba0d67
+--- /dev/null
++++ b/ui-tui/src/app/tpsStore.ts
+@@ -0,0 +1,56 @@
++import { atom } from 'nanostores'
++
++import { createTpsTracker, type TpsTracker } from '../lib/tps.js'
++
++import { $uiSessionId } from './uiStore.js'
++
++/**
++ * Status-bar TPS meter state.
++ *
++ * A module-level singleton is enough: the TUI drives one active session at a
++ * time. The tracker resets when ui.sid changes and when a `message.delta` or
++ * `reasoning.delta` arrives for a different session_id. The atom holds the
++ * EMA-smoothed target; the animated readout (TpsMeter in appChrome) eases
++ * toward it so the number rolls evenly instead of snapping between samples.
++ */
++const tracker: TpsTracker = createTpsTracker()
++
++export const $tpsTarget = atom(0)
++
++// Session the current rate belongs to (the last delta's session_id).
++let rateSessionId: null | string = null
++
++/** Reset all measurement state (session switch). */
++export const resetTps = (): void => {
++  tracker.reset()
++  rateSessionId = null
++  $tpsTarget.set(0)
++}
++
++/**
++ * Feed streamed assistant text (chars). A delta for a different session_id
++ * restarts the meter, so the old rate cannot bleed into the new session.
++ * `now` is injectable for tests.
++ */
++export const feedTpsChars = (chars: number, sessionId?: null | string, now: number = Date.now()): void => {
++  if (chars <= 0) {
++    return
++  }
++
++  if ((sessionId ?? null) !== rateSessionId) {
++    resetTps()
++    rateSessionId = sessionId ?? null
++  }
++
++  tracker.sample(chars, now)
++  const value = tracker.read()
++
++  if (value !== $tpsTarget.get()) {
++    $tpsTarget.set(value)
++  }
++}
++
++// /resume, /new or a Ctrl+X switch changes ui.sid before the new session
++// streams anything: drop the old rate at once instead of showing it until the
++// first delta arrives.
++$uiSessionId.listen(() => resetTps())
+diff --git a/ui-tui/src/app/useMainApp.ts b/ui-tui/src/app/useMainApp.ts
+index 1c38846c2c..aab5dec887 100644
+--- a/ui-tui/src/app/useMainApp.ts
++++ b/ui-tui/src/app/useMainApp.ts
+@@ -30,9 +30,8 @@ import { RESIZE_COALESCE_MS } from '../config/timing.js'
+ import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
+ import { SECTION_NAMES, sectionMode } from '../domain/details.js'
+ import { hasPasteChip } from '../domain/pasteExpand.js'
+-import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
++import { composeTabTitle, shortCwd } from '../domain/paths.js'
+ import { type GatewayClient } from '../gatewayClient.js'
+-import { useGitBranch } from '../hooks/useGitBranch.js'
+ import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
+ import { t } from '../i18n/runtime.js'
+ import { useT } from '../i18n/useT.js'
+@@ -1583,23 +1582,14 @@ export function useMainApp(gw: GatewayClient) {
+   // randomly disappear when the live tail scrolls offscreen.
+   const appProgress = useMemo(() => ({ showProgressArea }), [showProgressArea])
+ 
+-  const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
+-  const gitBranch = useGitBranch(cwd)
+-
+   const appStatus = useMemo(
+     () => ({
+-      // Cap the status-bar cwd/branch label tighter than the shared default so
+-      // it doesn't dominate the bar; the status rule reserves the left-side
+-      // essentials and truncates this further on narrow terminals.
+-      cwdLabel: fmtProjectCwdBranch(cwd, gitBranch, ui.info?.project?.name, 28),
+       goodVibesTick,
+       lastTurnEndedAt: ui.sid ? lastTurnEndedAt : null,
+       sessionStartedAt: ui.sid ? sessionStartedAt : null,
+-      sessionTitle: ui.sid ? ui.sessionTitle : '',
+       showStickyPrompt: !!stickyPrompt,
+       statusColor: statusColorOf(ui.status, ui.theme.color),
+       stickyPrompt,
+-      turnStartedAt: ui.sid ? turnStartedAt : null,
+       // CLI parity: the classic prompt_toolkit status bar shows a red dot
+       // on REC (cli.py:_get_voice_status_fragments line 2344).
+       voiceLabel: voiceRecording
+@@ -1609,14 +1599,11 @@ export function useMainApp(gw: GatewayClient) {
+           : `${voiceEnabled ? i18n.session.main.voiceOn : i18n.session.main.voiceOff}${voiceTts ? i18n.session.main.voiceTtsSuffix : ''}`
+     }),
+     [
+-      cwd,
+-      gitBranch,
+       goodVibesTick,
+       i18n,
+       lastTurnEndedAt,
+       sessionStartedAt,
+       stickyPrompt,
+-      turnStartedAt,
+       ui,
+       voiceEnabled,
+       voiceProcessing,
+diff --git a/ui-tui/src/app/wavePulseStore.ts b/ui-tui/src/app/wavePulseStore.ts
+new file mode 100644
+index 0000000000..6f960d3fc5
+--- /dev/null
++++ b/ui-tui/src/app/wavePulseStore.ts
+@@ -0,0 +1,19 @@
++import { atom } from 'nanostores'
++
++/**
++ * Status-line water wave pulse state.
++ *
++ * Every `tool.start` gateway event bumps the counter; the status-rule
++ * WaterTicker subscribes and plays exactly one splash pulse per bump.
++ *
++ * Keeping the trigger in its own store decouples the wave from token
++ * throughput: a tool call start overwrites the TPS sample, which used to make
++ * the TPS-driven wave cadence jump mid-call. The wave now answers only to
++ * tool activity, and the TPS meter keeps its own independent readout.
++ */
++export const $wavePulse = atom(0)
++
++/** Signal one tool-call splash (`tool.start`). */
++export const pulseWave = (): void => {
++  $wavePulse.set($wavePulse.get() + 1)
++}
+diff --git a/ui-tui/src/components/appChrome.tsx b/ui-tui/src/components/appChrome.tsx
+index 967f269065..af377c1edd 100644
+--- a/ui-tui/src/components/appChrome.tsx
++++ b/ui-tui/src/components/appChrome.tsx
+@@ -3,115 +3,27 @@ import { compactNumber } from '@hermes/shared/format'
+ import type { Usage } from '@hermes/shared/gateway-events'
+ import { useStore } from '@nanostores/react'
+ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
+-import unicodeSpinners from 'unicode-animations'
+ 
+ import { $delegationState } from '../app/delegationStore.js'
+-import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
++import type { BatteryInfo, Notice } from '../app/interfaces.js'
+ import { $isStatusRuleOccluded } from '../app/overlayStore.js'
++import { $tpsTarget } from '../app/tpsStore.js'
+ import { useTurnSelector } from '../app/turnStore.js'
++import { $wavePulse } from '../app/wavePulseStore.js'
+ import { DEV_CREDITS_MODE } from '../config/env.js'
+-import { faces } from '../content/faces.js'
+-import { VERBS } from '../content/verbs.js'
+ import { fmtDuration } from '../domain/messages.js'
+ import { stickyPromptFromViewport } from '../domain/viewport.js'
+ import { messages, t as tr } from '../i18n/runtime.js'
+ import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
++import { formatTps } from '../lib/tps.js'
+ import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
+ import type { Theme } from '../theme.js'
+ import type { Msg } from '../types.js'
+ 
+ import { scrollbarColors } from './overlayPrimitives.js'
+ 
+-const FACE_TICK_MS = 2500
+ const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
+ 
+-// Keep verb segment width stable so status-bar content to the right doesn't
+-// jitter when the ticker rotates between short/long verbs.
+-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
+-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+-
+-// Compact alternates for the `emoji` and `ascii` indicator styles.
+-// Each entry is a fixed-width (display-width) glyph.
+-const EMOJI_FRAMES = ['☤ ', '🌀', '🤔', '✨', '🍵', '🔮']
+-const ASCII_FRAMES = ['|', '/', '-', '\\']
+-
+-// Faster tick for spinner-style indicators — they read as motion only
+-// at frame rates closer to their authored interval.
+-const SPINNER_TICK_MS = 100
+-
+-interface IndicatorRender {
+-  frame: string
+-  intervalMs: number
+-  // When false, FaceTicker hides the rotating verb and just shows the
+-  // glyph + duration.  Lets `unicode` stay minimal while the other
+-  // styles keep the verb-rotation flavour users associate with the
+-  // running… status.
+-  showVerb: boolean
+-}
+-
+-const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
+-  if (style === 'kaomoji') {
+-    const frames = faces()
+-
+-    return { frame: frames[tick % frames.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
+-  }
+-
+-  if (style === 'emoji') {
+-    return {
+-      frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '☤ ',
+-      intervalMs: SPINNER_TICK_MS * 6,
+-      showVerb: true
+-    }
+-  }
+-
+-  if (style === 'ascii') {
+-    return {
+-      frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|',
+-      intervalMs: SPINNER_TICK_MS,
+-      showVerb: true
+-    }
+-  }
+-
+-  // 'unicode' — braille spinner (fixed 1-col).  Authored interval is
+-  // ~80ms; honour it but bound below at a safe minimum so React
+-  // re-renders stay reasonable.  This style is for users who want
+-  // the cleanest possible status, so no verb rotation either.
+-  const spinner = unicodeSpinners.braille
+-  const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
+-
+-  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
+-}
+-
+-// `EMOJI_FRAMES` is static, so measure its widest glyph once at module load
+-// instead of rescanning on every status render. `faces()` follows the active
+-// catalog, so its width is memoised per catalog table instead.
+-const EMOJI_FRAME_WIDTH = EMOJI_FRAMES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+-
+-let kaomojiWidthCache: { table: unknown; width: number } | null = null
+-
+-const kaomojiFrameWidth = (): number => {
+-  const table = messages().content.faces
+-
+-  if (kaomojiWidthCache?.table !== table) {
+-    kaomojiWidthCache = { table, width: Object.values(table).reduce((max, f) => Math.max(max, stringWidth(f)), 1) }
+-  }
+-
+-  return kaomojiWidthCache.width
+-}
+-
+-const indicatorFrameWidth = (style: IndicatorStyle): number => {
+-  if (style === 'kaomoji') {
+-    return kaomojiFrameWidth()
+-  }
+-
+-  if (style === 'emoji') {
+-    return EMOJI_FRAME_WIDTH
+-  }
+-
+-  // 'ascii' and 'unicode' are single-column glyphs.
+-  return 1
+-}
+-
+ // Bounded width of the elapsed-time clock, derived from `fmtDuration` itself so
+ // the reservation/budget stays consistent with what actually renders (it emits
+ // a space between units, e.g. `59m 59s` / `99h 59m`). Durations beyond this
+@@ -121,118 +33,6 @@ export const MAX_DURATION_WIDTH = Math.max(
+   stringWidth(fmtDuration(99 * 3_600_000 + 59 * 60_000)) // "99h 59m"
+ )
+ 
+-// Display width to reserve for the busy indicator so its verb + elapsed-time
+-// tail can't shove the model off-screen on narrow terminals. Style-aware:
+-// `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
+-// ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
+-// Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
+-export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
+-  const { showVerb } = renderIndicator(style, 0)
+-  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
+-  // ` · ` plus the bounded clock (e.g. `59m 59s`).
+-  const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
+-
+-  return indicatorFrameWidth(style) + verb + duration
+-}
+-
+-function FaceTicker({
+-  color,
+-  startedAt,
+-  style,
+-  verbOverride
+-}: {
+-  color: string
+-  startedAt?: null | number
+-  style: IndicatorStyle
+-  verbOverride?: string
+-}) {
+-  const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
+-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+-  const [now, setNow] = useState(() => Date.now())
+-  const isOccluded = useStore($isStatusRuleOccluded)
+-
+-  // Pre-compute cadence + verb-visibility for the active style so an
+-  // `/indicator` switch re-arms the interval (and skips the verb timer
+-  // for verb-less styles like `unicode`) without leaving the previous
+-  // timer dangling. A frozen override (idle compaction) always shows the
+-  // verb so "compacting…" is visible even in unicode style (#97239).
+-  const { intervalMs, showVerb } = renderIndicator(style, 0)
+-  const freezeVerb = Boolean(verbOverride)
+-  const displayVerb = freezeVerb || showVerb
+-
+-  useEffect(() => {
+-    // An overlay is painted OVER the status rule (the modal widget slot, or a
+-    // floating panel growing up over the top rule), so every tick below is a
+-    // re-render nobody can see — in an Ink TUI that churn reads as the dialog
+-    // tearing.  Arm nothing while occluded.  The effect re-runs when the rule
+-    // is revealed again and re-seeds `now` from the wall clock, so the elapsed
+-    // read-out resumes live rather than frozen at the moment it was covered.
+-    // See `$isStatusRuleOccluded` for why this is NOT `$isBlocked`.
+-    if (isOccluded) {
+-      return
+-    }
+-
+-    setNow(Date.now())
+-
+-    const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
+-    const clock = setInterval(() => setNow(Date.now()), 1000)
+-    // Verb timer is gated on `displayVerb` — `unicode` style hides the verb
+-    // entirely, so cycling `verbTick` would be an avoidable re-render. A
+-    // frozen override does not rotate.
+-    const verb = displayVerb && !freezeVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
+-
+-    return () => {
+-      clearInterval(glyph)
+-      clearInterval(clock)
+-
+-      if (verb !== null) {
+-        clearInterval(verb)
+-      }
+-    }
+-  }, [displayVerb, freezeVerb, intervalMs, isOccluded])
+-
+-  const { frame } = renderIndicator(style, tick)
+-  const verb = verbOverride ?? VERBS[verbTick % VERBS.length] ?? ''
+-  const verbSegment = displayVerb ? ` ${padVerb(verb)}` : ''
+-  // Leading space keeps a gap between the frame and the duration when the
+-  // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
+-  // IS shown, its trailing padding already provides the gap, so the extra
+-  // space is harmless.
+-  const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
+-
+-  return (
+-    <Text color={color}>
+-      {frame}
+-      {verbSegment}
+-      {durationSegment}
+-    </Text>
+-  )
+-}
+-
+-function ctxBarColor(pct: number | undefined, t: Theme) {
+-  if (pct == null) {
+-    return t.color.muted
+-  }
+-
+-  if (pct >= 95) {
+-    return t.color.statusCritical
+-  }
+-
+-  if (pct > 80) {
+-    return t.color.statusBad
+-  }
+-
+-  if (pct >= 50) {
+-    return t.color.statusWarn
+-  }
+-
+-  return t.color.statusGood
+-}
+-
+-function statusSessionCountLabel(count: number) {
+-  return tr('status.sessionCount', count)
+-}
+-
+ // State values the app layer compares against ('ready', 'running…') are shown
+ // through the catalog; anything else (a live verb, a slash reply) passes through.
+ export function displayStatus(status: string): string {
+@@ -281,6 +81,27 @@ function batteryLabel(info: BatteryInfo): string {
+   return `${info.plugged ? '⚡' : '🔋'} ${info.percent ?? '--'}%`
+ }
+ 
++// Thresholds the old context fill bar used: the number itself warns once the
++// bar is gone. Below 80% it stays in the shared status-rule gray.
++export const CONTEXT_WARN_PCT = 80
++export const CONTEXT_CRITICAL_PCT = 95
++
++export function contextColor(usage: Usage, t: Theme, muted: string): string {
++  const pct =
++    usage.context_percent ??
++    (usage.context_used != null && usage.context_max ? (usage.context_used / usage.context_max) * 100 : null)
++
++  if (pct == null) {
++    return muted
++  }
++
++  if (pct >= CONTEXT_CRITICAL_PCT) {
++    return t.color.statusCritical
++  }
++
++  return pct >= CONTEXT_WARN_PCT ? t.color.statusWarn : muted
++}
++
+ // Colour a credits notice by its level. The notice TEXT already carries its
+ // own glyph (⚠ • ✕ ✓) from the Python policy — we only tint it here, never
+ // prepend another glyph. `success` maps to the theme's green status colour.
+@@ -301,45 +122,12 @@ function noticeColor(level: Notice['level'], t: Theme): string {
+   return t.color.accent
+ }
+ 
+-function ctxBar(pct: number | undefined, w = 10) {
+-  const p = Math.max(0, Math.min(100, pct ?? 0))
+-  const filled = Math.round((p / 100) * w)
+-
+-  return '█'.repeat(filled) + '░'.repeat(w - filled)
+-}
+-
+-// `minLeftContent` is the display width of the high-priority left segments
+-// (status indicator + model + context). Reserving it makes the cwd/branch
+-// segment on the right yield FIRST on narrow terminals, instead of squeezing
+-// the loading indicator and model down to nothing.
+-export function statusRuleWidths(cols: number, cwdLabel: string, minLeftContent = 0) {
+-  const width = Math.max(1, Math.floor(cols || 1))
+-  const desiredSeparatorWidth = width >= 24 ? 3 : 1
+-  const baseMinLeft = width >= 24 ? 8 : 1
+-  // Never reserve more than the terminal width; never less than the historical
+-  // floor. With the default `minLeftContent = 0` this is identical to the old
+-  // behaviour, so callers that don't pass content are unaffected.
+-  const minLeftWidth = Math.min(width, Math.max(baseMinLeft, Math.floor(minLeftContent)))
+-  const maxRightWidth = Math.max(0, width - desiredSeparatorWidth - minLeftWidth)
+-
+-  if (!cwdLabel || maxRightWidth <= 0) {
+-    return { leftWidth: width, rightWidth: 0, separatorWidth: 0 }
+-  }
+-
+-  const rightWidth = Math.max(0, Math.min(stringWidth(cwdLabel), maxRightWidth))
+-  const separatorWidth = rightWidth > 0 ? desiredSeparatorWidth : 0
+-  const leftWidth = Math.max(1, width - separatorWidth - rightWidth)
+-
+-  return { leftWidth, rightWidth, separatorWidth }
+-}
+-
+ // Progressive disclosure for the status rule's lower-priority tail segments.
+-// As the terminal narrows we shed the least important pieces first (cost →
+-// bg → voice → compressions → duration → context bar), and below the bar
+-// breakpoint the context read-out collapses to a bare token count. Status and
+-// model are never gated here — they're guaranteed room by `statusRuleWidths`.
++// As the terminal narrows we shed the least important pieces first, and below
++// the compact breakpoint the context read-out collapses to a bare token count.
++// The water body, model and context are never gated here: the row budget
++// reserves them before any tail segment.
+ export interface StatusBarSegments {
+-  bar: boolean
+   bg: boolean
+   cacheHit: boolean
+   compactCtx: boolean
+@@ -356,15 +144,16 @@ export function statusBarSegments(cols: number): StatusBarSegments {
+ 
+   return {
+     compactCtx: w < 72,
+-    bar: w >= 72,
++    // The live TPS read-out sits in the right-aligned group with the context,
++    // so it outranks every tail segment and sheds just before compactCtx.
++    tps: w >= 76,
+     duration: w >= 76,
+     compressions: w >= 80,
+     voice: w >= 84,
+     bg: w >= 88,
+     subagents: w >= 92,
+     cacheHit: w >= 96,
+-    latency: w >= 104,
+-    tps: w >= 110
++    latency: w >= 104
+   }
+ }
+ 
+@@ -435,8 +224,9 @@ function SessionDuration({ startedAt }: { startedAt: number }) {
+ 
+   useEffect(() => {
+     // Paused only while an overlay actually covers the status rule — see
+-    // FaceTicker.  The `setNow` below already re-seeds from the wall clock
+-    // on every re-arm, so it doubles as the reveal catch-up.
++    // `$isStatusRuleOccluded` for why this is NOT `$isBlocked`.  The `setNow`
++    // below already re-seeds from the wall clock on every re-arm, so it
++    // doubles as the reveal catch-up.
+     if (isOccluded) {
+       return
+     }
+@@ -458,8 +248,9 @@ function IdleSince({ endedAt }: { endedAt: number }) {
+ 
+   useEffect(() => {
+     // Paused only while an overlay actually covers the status rule — see
+-    // FaceTicker.  The `setNow` below re-seeds from the wall clock on reveal
+-    // so the idle read-out is not frozen when the overlay closes.
++    // `$isStatusRuleOccluded`.  The `setNow` below re-seeds from the wall
++    // clock on reveal so the idle read-out is not frozen when the overlay
++    // closes.
+     if (isOccluded) {
+       return
+     }
+@@ -505,6 +296,423 @@ const shortModelLabel = (model: string) =>
+ const modelLabel = (model: string, effort?: string, fast?: boolean, effortWire?: string) =>
+   [shortModelLabel(model), effortLabel(effort, effortWire), fast ? tr('status.fast') : ''].filter(Boolean).join(' ')
+ 
++// A full Braille water body is always exactly 25 terminal cells wide. Keeping
++// it mounted while idle lets the frozen drift frame stay in place instead of
++// replacing the indicator with a shorter "ready" label that shifts the model
++// and context readout.
++export const WATER_CELL_COUNT = 25
++// The wave, separators, model, context, bg count and TPS share ONE fixed gray,
++// independent of the theme: #6B7280 keeps about 4.5:1 contrast on both white
++// and near-black backgrounds.
++const STATUS_METRIC_GRAY = '#6B7280'
++// 16 FPS is quick enough to read as fluid in Ink while staying well below a
++// terminal-wide 60 FPS repaint loop. The splash clock steps at this fixed
++// physics cadence regardless of token throughput.
++export const WATER_FRAME_MS = 60
++
++// Keep Ink on one stable repaint cadence. TPS changes phase velocity instead
++// of tearing down and re-arming the interval whenever the EMA moves. The wave
++// advances at an effective 30ms/frame at zero TPS and 20ms/frame from 15 t/s
++// upward, expressed as fractional frames on the 60ms clock.
++export const waterFrameStep = (tps: number): number => {
++  const clampedTps = Math.min(Math.max(tps, 0), 15)
++
++  return WATER_FRAME_MS / (30 - (clampedTps * 2) / 3)
++}
++
++// A seeded, correlated field gives each impact a slightly different texture
++// without independent per-pixel noise.
++const PEAK_MIN = 1.0
++const PEAK_MAX = 3.6
++
++export const WATER_SPLASH_MS = 900
++
++export const splashClockAt = (startedAt: number, now: number): number => {
++  const elapsed = Math.max(0, now - startedAt)
++
++  return elapsed >= WATER_SPLASH_MS ? -1 : elapsed
++}
++
++const seededUnit = (seed: number): (() => number) => {
++  let state = seed | 0
++
++  return () => {
++    state = (state + 0x6d2b79f5) | 0
++    let value = state
++    value = Math.imul(value ^ (value >>> 15), value | 1)
++    value ^= value + Math.imul(value ^ (value >>> 7), value | 61)
++
++    return ((value ^ (value >>> 14)) >>> 0) / 4294967296
++  }
++}
++
++/**
++ * Deterministic, spatially correlated droplet peaks. Sparse seeded control
++ * points are interpolated across the raster, so each tool pulse is irregular
++ * without making neighboring Braille columns flicker independently.
++ */
++export const freshWavePeaks = (count: number = WATER_CELL_COUNT * 2, seed = 0): number[] => {
++  if (count <= 0) {
++    return []
++  }
++
++  const random = seededUnit(seed)
++  const controlSpan = 6
++
++  const controls = Array.from(
++    { length: Math.ceil((count - 1) / controlSpan) + 1 },
++    () => PEAK_MIN + (PEAK_MAX - PEAK_MIN) * Math.pow(random(), 2)
++  )
++
++  return Array.from({ length: count }, (_, pixel) => {
++    const control = pixel / controlSpan
++    const left = Math.floor(control)
++    const mix = control - left
++    const start = controls[left] ?? PEAK_MIN
++    const end = controls[left + 1] ?? start
++    const easedMix = mix * mix * (3 - 2 * mix)
++
++    return start + (end - start) * easedMix
++  })
++}
++
++const BRAILLE_DOTS = [
++  [0x01, 0x08],
++  [0x02, 0x10],
++  [0x04, 0x20],
++  [0x40, 0x80]
++] as const
++
++// The base surface: the classic drifting wave (row 0 = full cell, row 4 =
++// dry). Pure in `frame`, so the drift is deterministic and phase-continuous
++// across turns — the frame counter never resets.
++//
++// Keep the proven 2.4 baseline and monochrome color. A fifth-power negative
++// lobe adds a narrow needle only at the fundamental's crest; broad shoulders
++// and positive troughs stay where they were, avoiding full-height plateaus.
++export const pointedCrestOffset = (fundamental: number): number =>
++  fundamental < 0 ? -0.25 * Math.pow(-fundamental, 5) : 0
++
++const driftSurface = (pixel: number, pixelCount: number, frame: number): number => {
++  const x = pixel / (pixelCount - 1)
++  const phase = frame * 0.105
++  const theta = x * Math.PI * 2 * 1.25 + phase
++  const fundamental = Math.sin(theta)
++  const source = 0.52 + 0.18 * Math.sin(phase * 0.31)
++  const distance = Math.abs(x - source)
++
++  return (
++    2.4 +
++    0.9 * fundamental +
++    pointedCrestOffset(fundamental) +
++    0.45 * Math.sin(x * Math.PI * 2 * 3.7 - phase * 0.73) +
++    // Third harmonic phase-locked to the fundamental: lifts the crest into a
++    // pointed spike (and pushes the trough down) instead of a flat-topped
++    // mesa — the peak rounds to the top row only where the crest actually
++    // breaks, so the wave reads as sharp whitecaps, not a plateau.
++    0.5 * Math.sin(3 * theta - Math.PI) +
++    0.85 * Math.sin(distance * 30 - phase * 2.1) * Math.exp(-distance * 5.5)
++  )
++}
++
++export interface WaterSplash {
++  peaks: readonly number[]
++  /** Horizontal impact point in Braille sub-pixels. Defaults to the center. */
++  origin?: number
++  /** Elapsed splash time in ms; the wake is settled at WATER_SPLASH_MS. */
++  clock: number
++}
++
++/**
++ * Lift contributed by a localized impact and its two outward-travelling wakes.
++ * The envelope is exactly zero at both ends so a completed splash returns to
++ * the unmodified drifting surface without a residual tremor.
++ */
++export const waterSplashLift = (pixel: number, pixelCount: number, splash: WaterSplash): number => {
++  if (splash.clock <= 0 || splash.clock >= WATER_SPLASH_MS || pixelCount <= 0) {
++    return 0
++  }
++
++  const progress = splash.clock / WATER_SPLASH_MS
++  const origin = splash.origin ?? (pixelCount - 1) / 2
++  const distance = Math.abs(pixel - origin)
++  const peak = splash.peaks[pixel] ?? PEAK_MIN
++  const texture = 0.82 + 0.18 * Math.max(0, Math.min(1, (peak - PEAK_MIN) / (PEAK_MAX - PEAK_MIN)))
++
++  // A narrow initial crown rises and damps quickly at the point of impact.
++  const impactRise = Math.sin(Math.PI * Math.min(1, splash.clock / 360))
++
++  const impact = 3 * impactRise * Math.exp(-3.2 * progress) * Math.exp(-(distance * distance) / (2 * 2.4 * 2.4))
++
++  // The displaced energy becomes a pair of broad fronts moving left/right.
++  const front = progress * pixelCount * 0.58
++  const frontDistance = distance - front
++
++  const wake = 2.2 * Math.sin(Math.PI * progress) * Math.exp(-(frontDistance * frontDistance) / (2 * 2.2 * 2.2))
++
++  return (impact + wake) * texture
++}
++
++const WATER_ROW_DEADBAND = 0.15
++
++export const quantizeWaterHeight = (height: number, previous?: number): number => {
++  const clamped = Math.max(0, Math.min(4, height))
++  const nearest = Math.round(clamped)
++
++  if (previous === undefined) {
++    return nearest
++  }
++
++  const stable = Math.max(0, Math.min(4, Math.round(previous)))
++
++  if (nearest > stable && clamped < stable + 0.5 + WATER_ROW_DEADBAND) {
++    return stable
++  }
++
++  if (nearest < stable && clamped > stable - 0.5 - WATER_ROW_DEADBAND) {
++    return stable
++  }
++
++  return nearest
++}
++
++export const waterSurface = (
++  frame: number,
++  splash?: WaterSplash,
++  previous: readonly number[] = [],
++  cellCount: number = WATER_CELL_COUNT
++): number[] => {
++  const pixelCount = cellCount * 2
++  // A settled impact is an exact physics boundary: discard hysteresis history
++  // so the final glyphs cannot retain a stale lifted row while idle.
++  const stablePrevious = splash && splash.clock >= WATER_SPLASH_MS ? [] : previous
++  const surface: number[] = []
++
++  for (let pixel = 0; pixel < pixelCount; pixel += 1) {
++    let height = driftSurface(pixel, pixelCount, frame)
++
++    if (splash) {
++      height -= waterSplashLift(pixel, pixelCount, splash)
++    }
++
++    // Row 4 leaves both dot columns empty. The previous row adds a narrow
++    // deadband around half-row thresholds, suppressing one-frame glyph pops.
++    surface.push(quantizeWaterHeight(height, stablePrevious[pixel]))
++  }
++
++  return surface
++}
++
++const waterFrameFromSurface = (surface: readonly number[], cellCount: number = WATER_CELL_COUNT): string =>
++  Array.from({ length: cellCount }, (_, cell) => {
++    const left = surface[cell * 2] ?? 4
++    const right = surface[cell * 2 + 1] ?? 4
++    let dots = 0
++
++    for (let column = 0; column < 2; column += 1) {
++      const fillFrom = column === 0 ? left : right
++
++      for (let row = fillFrom; row < 4; row += 1) {
++        dots |= BRAILLE_DOTS[row]![column]!
++      }
++    }
++
++    return String.fromCodePoint(0x2800 + dots)
++  }).join('')
++
++export const waterFrame = (
++  frame: number,
++  splash?: WaterSplash,
++  previous?: readonly number[],
++  cellCount: number = WATER_CELL_COUNT
++): string => waterFrameFromSurface(waterSurface(frame, splash, previous, cellCount), cellCount)
++
++// The body stays a fixed 25 cells wide on any normal terminal, so it never
++// shifts between idle and busy. Only a narrow terminal shrinks it (12 cells
++// below 72 cols, 6 below 52), so the model and context read-out keep room.
++export const waterCellCount = (cols: number): number => {
++  const width = Math.max(1, Math.floor(cols || 1))
++
++  if (width >= 72) {
++    return WATER_CELL_COUNT
++  }
++
++  return width >= 52 ? 12 : 6
++}
++
++// The wave uses the same gray as the rest of the rule; its crests read by
++// shape, not by color.
++const WAVE_COLOR = STATUS_METRIC_GRAY
++
++function WaterTicker({ busy, cells }: { busy: boolean; cells: number }) {
++  // One stable 60ms clock drives a TPS-scaled phase while busy. Every
++  // `tool.start` seeds a localized impact and two travelling wakes. Between
++  // turns the drift freezes on its last frame; the status rule stays mounted
++  // so model/context columns never shift.
++  const pulse = useStore($wavePulse)
++  const tps = useStore($tpsTarget)
++  const isOccluded = useStore($isStatusRuleOccluded)
++  // A pulse that predates this mount (the rule remounts after an overlay or a
++  // status-bar move) must not replay its splash.
++  const mountPulseRef = useRef(pulse)
++  const [driftFrame, setDriftFrame] = useState(0)
++  const [peaks, setPeaks] = useState<number[]>(() => freshWavePeaks(cells * 2))
++  const [origin, setOrigin] = useState((cells * 2 - 1) / 2)
++  // -1 = no splash in flight.
++  const [splashClock, setSplashClock] = useState(-1)
++  const frameStepRef = useRef(waterFrameStep(tps))
++  const busyRef = useRef(busy)
++  // cells only re-seeds peaks on a real pulse; a resize must not replay the
++  // splash, so the pulse effect reads the live value through a ref.
++  const cellsRef = useRef(cells)
++  const splashStartedAtRef = useRef<number | null>(null)
++  const previousSurfaceRef = useRef<number[]>([])
++  const lastSplashClockRef = useRef(-1)
++  const splashActive = splashClock >= 0
++  // Arm nothing while an overlay covers the rule (see `$isStatusRuleOccluded`);
++  // the drift resumes from its last frame on reveal.
++  const animationActive = (busy || splashActive) && !isOccluded
++
++  // Timer callbacks only consume committed render state. Keeping these writes
++  // in effects avoids leaking values from a React render that gets discarded.
++  useEffect(() => {
++    frameStepRef.current = waterFrameStep(tps)
++  }, [tps])
++
++  useEffect(() => {
++    busyRef.current = busy
++  }, [busy])
++
++  useEffect(() => {
++    cellsRef.current = cells
++  }, [cells])
++
++  // New tool call → a repeatable impact origin + correlated texture.
++  useEffect(() => {
++    if (pulse <= 0 || pulse === mountPulseRef.current) {
++      return
++    }
++
++    const random = seededUnit(pulse)
++    const pixelCount = cellsRef.current * 2
++    setPeaks(freshWavePeaks(pixelCount, pulse))
++    setOrigin(Math.round((0.2 + 0.6 * random()) * (pixelCount - 1)))
++    splashStartedAtRef.current = Date.now()
++    setSplashClock(0)
++  }, [pulse])
++
++  // One interval owns both drift and impact updates. Starting/retriggering a
++  // splash while busy does not re-arm it; wall time gives every impact its full
++  // lifetime regardless of where it lands inside the current 60ms cadence.
++  useEffect(() => {
++    if (!animationActive) {
++      return
++    }
++
++    const id = setInterval(() => {
++      if (busyRef.current) {
++        setDriftFrame(current => current + frameStepRef.current)
++      }
++
++      const startedAt = splashStartedAtRef.current
++
++      if (startedAt !== null) {
++        const nextClock = splashClockAt(startedAt, Date.now())
++
++        if (nextClock < 0) {
++          splashStartedAtRef.current = null
++        }
++
++        setSplashClock(nextClock)
++      }
++    }, WATER_FRAME_MS)
++
++    return () => clearInterval(id)
++  }, [animationActive])
++
++  // The first no-splash render after a completed wake must discard hysteresis
++  // history so an idle frame cannot retain a lifted Braille row.
++  const justSettled = !splashActive && lastSplashClockRef.current >= 0
++
++  const surface = waterSurface(
++    driftFrame,
++    splashActive ? { clock: splashClock, origin, peaks } : undefined,
++    justSettled ? [] : previousSurfaceRef.current,
++    cells
++  )
++
++  // Commit the hysteresis history after render. Mutating the ref during render
++  // would make React Strict Mode's repeated render observe a different input.
++  useEffect(() => {
++    previousSurfaceRef.current = surface
++    lastSplashClockRef.current = splashClock
++  }, [splashClock, surface])
++
++  return <Text color={WAVE_COLOR}>{waterFrameFromSurface(surface, cells)}</Text>
++}
++
++// TPS read-out cadence + ease. The displayed number rolls toward the EMA
++// target instead of snapping between samples; the interval clears once the
++// value settles, so an idle status rule never repaints on its own.
++const TPS_TICK_MS = 120
++const TPS_EASE = 0.4
++export const TPS_LABEL_WIDTH = stringWidth(formatTps(0))
++
++/**
++ * Live tokens/sec from the client-side meter (`$tpsTarget`). Before the first
++ * streamed delta of a session it shows the server's rolling `avg_tps` when the
++ * gateway sends one, a fixed-width placeholder while busy, and blank padding of
++ * the same width when idle with no data, so the context column never moves
++ * between idle and busy.
++ */
++export function TpsMeter({ busy, fallback, lead }: { busy: boolean; fallback?: number; lead: boolean }) {
++  const target = useStore($tpsTarget)
++  const isOccluded = useStore($isStatusRuleOccluded)
++  const [display, setDisplay] = useState(target)
++  const displayRef = useRef(target)
++
++  useEffect(() => {
++    if (target <= 0) {
++      displayRef.current = 0
++      setDisplay(0)
++
++      return
++    }
++
++    if (isOccluded) {
++      return
++    }
++
++    const id = setInterval(() => {
++      const current = displayRef.current
++      const next = current + (target - current) * TPS_EASE
++      const settled = Math.abs(target - next) < 0.05 ? target : next
++
++      displayRef.current = settled
++      setDisplay(settled)
++
++      if (settled === target) {
++        clearInterval(id)
++      }
++    }, TPS_TICK_MS)
++
++    return () => clearInterval(id)
++  }, [isOccluded, target])
++
++  const value = target > 0 ? display || target : (fallback ?? 0)
++
++  if (value <= 0 && !busy) {
++    return <Text>{' '.repeat((lead ? stringWidth(' │ ') : 0) + TPS_LABEL_WIDTH)}</Text>
++  }
++
++  return (
++    <Text color={STATUS_METRIC_GRAY}>
++      {lead ? ' │ ' : ''}
++      {formatTps(value)}
++    </Text>
++  )
++}
++
+ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
+   const [active, setActive] = useState(false)
+   const [color, setColor] = useState(t.color.accent)
+@@ -533,7 +741,6 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
+ export function StatusRule({
+   battery,
+   focusView,
+-  cwdLabel,
+   cols,
+   busy,
+   compacting = false,
+@@ -544,44 +751,42 @@ export function StatusRule({
+   modelFast,
+   modelReasoningEffort,
+   modelReasoningEffortWire,
+-  indicatorStyle = 'kaomoji',
+   notice,
+   usage,
+   bgCount,
+   lastTurnEndedAt,
+-  liveSessionCount,
+-  sessionTitle,
+   sessionStartedAt,
+-  turnStartedAt,
+   voiceLabel,
+-  onSessionCountClick,
+   t
+ }: StatusRuleProps) {
+   // Not a hook: tests call StatusRule as a plain function, and the rule re-renders on every tick anyway.
+   const T = messages()
+-  const pct = usage.context_percent ?? undefined
++  const muted = STATUS_METRIC_GRAY
+   const contextMark = usage.context_estimated ? '~' : ''
+-  const barColor = ctxBarColor(pct, t)
+   const segs = statusBarSegments(cols)
++  const width = Math.max(1, Math.floor(cols || 1))
++  const waterCells = waterCellCount(width)
+ 
+   // display.status_bar.fields visibility gate (same key + names as the
+   // classic CLI bar). null = user hasn't customized → everything shows.
+   const ok = (name: string) => statusBarFields === null || statusBarFields.has(name)
+ 
+   // On narrow terminals the context read-out collapses to a bare token count
+-  // (`12k tok`) and the visual fill bar is dropped entirely.
++  // (`12k tok`). An absent context_used means the occupancy is unknown (a
++  // resumed session before its next turn): show `–`, never a made-up 0.
++  const usedLabel = usage.context_used != null ? `${contextMark}${compactNumber(usage.context_used)}` : '–'
++
+   const ctxLabel =
+     ok('context_detail') || ok('context_pct')
+       ? usage.context_max
+         ? segs.compactCtx
+-          ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
+-          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
++          ? `${usedLabel} tok`
++          : `${usedLabel}/${compactNumber(usage.context_max)}`
+         : (usage.total ?? 0) > 0
+           ? `${compactNumber(usage.total)} tok`
+           : ''
+       : ''
+ 
+-  const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
+   const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelReasoningEffortWire)
+ 
+   // Battery read-out — the first (pinned) status-bar element when enabled.
+@@ -590,47 +795,41 @@ export function StatusRule({
+   const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
+   const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
+ 
+-  // A credits notice replaces the status/verb slot, but only when idle —
+-  // while busy the FaceTicker always wins (R1 render priority). The notice
+-  // text carries its own glyph; we only tint it (R1) and let it shrink (R3-M7).
+-  const showNotice = !busy && !!notice?.text
+-  // The notice slot is shrinkable (flexShrink={1}, truncate-end), so reserve
+-  // only a small bounded width for it in the essentials budget — enough that
+-  // a short notice never gets crushed, but a long one ellipsizes instead of
+-  // shoving `model │ ctx` off-screen (R3-M7). Cap at the notice's own width
+-  // so short notices reserve exactly what they need.
+-  const NOTICE_RESERVE_MAX = 24
+-  const noticeReserve = showNotice ? Math.min(stringWidth(notice!.text), NOTICE_RESERVE_MAX) : 0
+-
+-  // Width of the must-keep left segments (indicator + model + context). They
+-  // are pinned (never shrink) and reserved so the cwd/branch on the right
+-  // yields first. The busy face width depends on the active /indicator style
+-  // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
+-  // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
+-  const slotWidth = busy
+-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
+-    : showNotice
+-      ? noticeReserve
+-      : stringWidth(status)
++  // The water body is the live activity signal, so there is no idle "ready"
++  // label. The slot after it shows only what needs attention: compaction, a
++  // non-ready idle status (startup, reconnect), or else a credits notice. The
++  // notice only shows when idle (R1 render priority); its text carries its
++  // own glyph, we only tint it and let it shrink (R3-M7).
++  const slotText = compacting ? T.status.compacting : !busy && status !== 'ready' ? displayStatus(status) : ''
++  const showNotice = !slotText && !busy && !!notice?.text
++  // The slot is shrinkable (flexShrink={1}, truncate-end), so reserve only a
++  // small bounded width for it — enough that a short text never gets crushed,
++  // but a long one ellipsizes instead of shoving `model` off-screen.
++  const SLOT_RESERVE_MAX = 24
++  const slotLabel = slotText || (showNotice ? notice!.text : '')
++  const slotReserve = slotLabel ? Math.min(1 + stringWidth(slotLabel), SLOT_RESERVE_MAX) : 0
++
++  const SEP = stringWidth(' │ ')
++  const showTps = segs.tps && ok('tps')
+ 
++  // Pinned essentials: battery + water + slot + model on the left, context +
++  // TPS on the right. Tail segments only get what is left after them.
+   const essentialWidth =
+-    stringWidth('─ ') +
+     batteryWidth +
+-    slotWidth +
+-    stringWidth(' │ ') +
++    waterCells +
++    slotReserve +
++    SEP +
+     stringWidth(modelText) +
+-    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+-
+-  const rightLabel = sessionTitle && ok('title') ? ` ${sessionTitle} ` : cwdLabel
+-  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
++    stringWidth(ctxLabel) +
++    (showTps ? (ctxLabel ? SEP : 0) + TPS_LABEL_WIDTH : 0)
+ 
+   // Whole-segment progressive disclosure for the tail: a segment renders only
+   // if it fits in the space left after the pinned essentials, evaluated in
+-  // descending priority order — bar, duration, compressions, voice, session
+-  // count, bg, cost. Lower-priority segments drop first and nothing truncates
+-  // mid-segment, so status/model/context are never crushed.
+-  const SEP = stringWidth(' │ ')
+-  let tailBudget = Math.max(0, leftWidth - essentialWidth)
++  // descending priority order. Lower-priority segments drop first and nothing
++  // truncates mid-segment, so the water, model and context are never crushed.
++  // The extra column is the right-aligned group's left padding: it always
++  // keeps a gap between the left content and the context read-out.
++  let tailBudget = Math.max(0, width - essentialWidth - 1)
+ 
+   const fits = (w: number) => {
+     if (tailBudget >= w) {
+@@ -642,7 +841,6 @@ export function StatusRule({
+     return false
+   }
+ 
+-  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+ 
+   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
+@@ -654,12 +852,11 @@ export function StatusRule({
+       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
+       : ''
+ 
+-  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${contextMark}${pct}%` : ''}`))
+   const showDuration = segs.duration && ok('duration') && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+ 
+   // Idle clock — time since the last final agent response. Hidden while busy
+-  // (the FaceTicker's elapsed tail covers the live turn) and before the first
+-  // turn completes. Shares the duration breakpoint and width reservation.
++  // (the water body carries the live turn) and before the first turn
++  // completes. Shares the duration breakpoint and width reservation.
+   const showIdle =
+     segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+ 
+@@ -669,18 +866,15 @@ export function StatusRule({
+     compressions > 0 &&
+     fits(SEP + stringWidth(T.status.compressions(compressions)))
+ 
+-  // Cache-hit % + rolling latency / tokens-per-sec — mirrored from the classic
+-  // CLI bar (PR #98250). The server omits the keys when no data exists (zero
+-  // cache reads, Codex app-server with no latency), so these self-hide.
++  // Cache-hit % + rolling latency — mirrored from the classic CLI bar (PR
++  // #98250). The server omits the keys when no data exists (zero cache reads,
++  // Codex app-server with no latency), so these self-hide.
+   const cacheHitText = typeof usage.cache_hit_pct === 'number' ? `◎ ${usage.cache_hit_pct}%` : ''
+   const showCacheHit = segs.cacheHit && ok('cache_hit') && !!cacheHitText && fits(SEP + stringWidth(cacheHitText))
+   const latencyText = typeof usage.avg_latency_s === 'number' ? `◷ ${usage.avg_latency_s.toFixed(1)}s` : ''
+   const showLatency = segs.latency && ok('latency') && !!latencyText && fits(SEP + stringWidth(latencyText))
+-  const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
+-  const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
+ 
+   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
+-  const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
+   const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(T.status.bgTasks(bgCount)))
+   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
+ 
+@@ -706,110 +900,74 @@ export function StatusRule({
+   // seeing it, so it must not drop off a narrow terminal.
+   const showFocus = !!focusView
+ 
+-  const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
+-    event.stopImmediatePropagation?.()
+-    onSessionCountClick?.()
+-  }
+-
+-  const sessionCountNode = onSessionCountClick ? (
+-    <Box flexShrink={0} onClick={handleSessionCountClick}>
+-      <Text color={t.color.accent}> │ {sessionCountText}</Text>
+-    </Box>
+-  ) : (
+-    <Text color={t.color.muted}> │ {sessionCountText}</Text>
+-  )
+-
+   return (
+     <Box height={1}>
+-      <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
+-        {/* Leading pinned chrome: border + busy face / idle status. When a
+-            notice occupies the slot the status text is dropped — the notice
+-            renders as a separate shrinkable box below so a long notice
+-            ellipsizes instead of crushing model │ ctx (R3-M7). */}
+-        <Box flexDirection="row" flexShrink={0}>
+-          <Text color={t.color.border}>{'─ '}</Text>
+-          {showBattery ? (
++      <Box flexDirection="row" flexShrink={1} overflow="hidden" width={width}>
++        {/* Leading pinned chrome: battery badge (when enabled), then the water
++            body. No border dash: the strip starts flush at the left edge. The
++            water stays mounted when idle (frozen drift frame), so the model
++            and context columns never shift between idle and busy. */}
++        {showBattery ? (
++          <Box flexShrink={0}>
+             <Text color={batteryColorVal}>
+               {batteryText}
+-              <Text color={t.color.muted}>{' │ '}</Text>
++              <Text color={muted}>{' │ '}</Text>
+             </Text>
+-          ) : null}
+-          {busy ? (
+-            <FaceTicker
+-              color={statusColor}
+-              startedAt={turnStartedAt}
+-              style={indicatorStyle}
+-              verbOverride={compacting ? T.status.compacting : undefined}
+-            />
+-          ) : showNotice ? null : (
+-            <Text color={statusColor} wrap="truncate-end">
+-              {displayStatus(status)}
+-            </Text>
+-          )}
++          </Box>
++        ) : null}
++        <Box flexShrink={0} width={waterCells}>
++          <WaterTicker busy={busy} cells={waterCells} />
+         </Box>
+-        {/* Notice slot — the only shrinkable left element (R3-M7). Sits in a
+-            flexShrink={1} box with truncate-end so it yields/ellipsizes
+-            before the pinned model │ ctx box ever clips. */}
+-        {showNotice ? (
++        {/* Attention slot — the only shrinkable left element (R3-M7). It
++            yields/ellipsizes before the pinned model box ever clips. */}
++        {slotLabel ? (
+           <Box flexDirection="row" flexShrink={1} overflow="hidden">
+-            <Text color={noticeColor(notice!.level, t)} wrap="truncate-end">
+-              {notice!.text}
++            <Text color={slotText ? statusColor : noticeColor(notice!.level, t)} wrap="truncate-end">
++              {' '}
++              {slotLabel}
+             </Text>
+           </Box>
+         ) : null}
+-        {/* Pinned essentials — model + context never shrink, always visible. */}
++        {/* Pinned essentials — the model never shrinks, always visible. */}
+         <Box flexDirection="row" flexShrink={0}>
+           {DEV_CREDITS_MODE ? (
+             <Text color={t.color.warn} wrap="truncate-end">
+               {T.status.devCredits}
+             </Text>
+           ) : null}
+-          <Text color={t.color.muted} wrap="truncate-end">
++          <Text color={muted} wrap="truncate-end">
+             {' │ '}
+             {modelText}
+           </Text>
+-          {ctxLabel ? (
+-            <Text color={t.color.muted} wrap="truncate-end">
+-              {' │ '}
+-              {ctxLabel}
+-            </Text>
+-          ) : null}
+         </Box>
+         {showFocus ? (
+           <Box flexDirection="row" flexShrink={0}>
+-            <Text color={t.color.muted}>{' │ '}</Text>
++            <Text color={muted}>{' │ '}</Text>
+             <Text color={t.color.warn}>◉ focus</Text>
+           </Box>
+         ) : null}
+-        {showBar ? (
+-          <Text color={t.color.muted} wrap="truncate-end">
+-            {' │ '}
+-            <Text color={barColor}>[{bar}]</Text>{' '}
+-            <Text color={barColor}>{pct != null ? `${contextMark}${pct}%` : ''}</Text>
+-          </Text>
+-        ) : null}
+         {showDuration ? (
+-          <Text color={t.color.muted} wrap="truncate-end">
++          <Text color={muted} wrap="truncate-end">
+             {' │ '}
+             <SessionDuration startedAt={sessionStartedAt!} />
+           </Text>
+         ) : null}
+         {showIdle ? (
+-          <Text color={t.color.muted} wrap="truncate-end">
++          <Text color={muted} wrap="truncate-end">
+             {' │ '}
+             <IdleSince endedAt={lastTurnEndedAt!} />
+           </Text>
+         ) : null}
+         {showCompressions ? (
+-          <Text color={t.color.muted} wrap="truncate-end">
++          <Text color={muted} wrap="truncate-end">
+             {' │ '}
+-            <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
++            <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : muted}>
+               {T.status.compressions(compressions)}
+             </Text>
+           </Text>
+         ) : null}
+         {showCacheHit ? (
+-          <Text color={t.color.muted} wrap="truncate-end">
++          <Text color={muted} wrap="truncate-end">
+             {' │ '}
+             <Text
+               color={
+@@ -817,7 +975,7 @@ export function StatusRule({
+                   ? t.color.statusGood
+                   : usage.cache_hit_pct! >= 40
+                     ? t.color.statusWarn
+-                    : t.color.muted
++                    : muted
+               }
+             >
+               {cacheHitText}
+@@ -825,42 +983,33 @@ export function StatusRule({
+           </Text>
+         ) : null}
+         {showLatency ? (
+-          <Text color={t.color.muted} wrap="truncate-end">
++          <Text color={muted} wrap="truncate-end">
+             {' │ '}
+             {latencyText}
+           </Text>
+         ) : null}
+-        {showTps ? (
+-          <Text color={t.color.muted} wrap="truncate-end">
+-            {' │ '}
+-            {tpsText}
+-          </Text>
+-        ) : null}
+         {showVoice ? (
+           <Text
+-            color={
+-              voiceLabel!.startsWith('●') ? t.color.error : voiceLabel!.startsWith('◉') ? t.color.warn : t.color.muted
+-            }
++            color={voiceLabel!.startsWith('●') ? t.color.error : voiceLabel!.startsWith('◉') ? t.color.warn : muted}
+             wrap="truncate-end"
+           >
+             {' │ '}
+             {voiceLabel}
+           </Text>
+         ) : null}
+-        {showSessionCount ? sessionCountNode : null}
+         {showBg ? (
+-          <Text color={t.color.muted} wrap="truncate-end">
++          <Text color={muted} wrap="truncate-end">
+             {' │ '}
+             {T.status.bgTasks(bgCount)}
+           </Text>
+         ) : null}
+         {showSubagents ? (
+-          <Text color={t.color.muted} wrap="truncate-end">
++          <Text color={muted} wrap="truncate-end">
+             {' │ '}⛓ {subagentCount}
+           </Text>
+         ) : null}
+         {showResumeHint ? (
+-          <Text color={t.color.muted} dim wrap="truncate-end">
++          <Text color={muted} dim wrap="truncate-end">
+             {' │ '}
+             {resumeHintText}
+           </Text>
+@@ -872,21 +1021,17 @@ export function StatusRule({
+           </Text>
+         ) : null}
+         {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it
+-            renders last — any overflow truncates the HUD itself rather than the
+-            budgeted segments before it. It self-hides when no delegation runs. */}
++            renders after the budgeted segments — any overflow truncates the HUD
++            itself. It self-hides when no delegation runs. */}
+         <SpawnHud t={t} />
++        {/* Right-aligned read-outs: context + live TPS sit against the right
++            edge (the flexGrow spacer pushes them there). */}
++        <Box flexGrow={1} />
++        <Box flexDirection="row" flexShrink={0} paddingLeft={1}>
++          {ctxLabel ? <Text color={contextColor(usage, t, muted)}>{ctxLabel}</Text> : null}
++          {showTps ? <TpsMeter busy={busy} fallback={usage.avg_tps ?? undefined} lead={!!ctxLabel} /> : null}
++        </Box>
+       </Box>
+-
+-      {rightWidth > 0 ? (
+-        <>
+-          <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
+-          <Box flexShrink={0} width={rightWidth}>
+-            <Text bold={!!sessionTitle} color={sessionTitle ? t.color.accent : t.color.label} wrap="truncate-end">
+-              {rightLabel}
+-            </Text>
+-          </Box>
+-        </>
+-      ) : null}
+     </Box>
+   )
+ }
+@@ -991,30 +1136,24 @@ interface StatusRuleProps {
+   focusView?: boolean
+   bgCount: number
+   lastTurnEndedAt?: null | number
+-  liveSessionCount: number
+   busy: boolean
+-  // Context compaction in progress — FaceTicker freezes on "compacting".
++  // Context compaction in progress — the attention slot shows "compacting".
+   compacting?: boolean
+   cols: number
+-  cwdLabel: string
+   model: string
+   modelFast?: boolean
+   modelReasoningEffort?: string
+   modelReasoningEffortWire?: string
+-  indicatorStyle?: IndicatorStyle
+   notice?: Notice | null
+   sessionStartedAt?: null | number
+-  sessionTitle?: string
+   status: string
+   // display.status_bar.fields — segment visibility filter shared with the
+   // classic CLI bar. null = defaults (everything shows).
+   statusBarFields?: null | ReadonlySet<string>
+   statusColor: string
+   t: Theme
+-  turnStartedAt?: null | number
+   usage: Usage
+   voiceLabel?: string
+-  onSessionCountClick?: () => void
+ }
+ 
+ interface StickyPromptTrackerProps {
+diff --git a/ui-tui/src/components/appLayout.tsx b/ui-tui/src/components/appLayout.tsx
+index dbcf11e9ad..9de79bcf71 100644
+--- a/ui-tui/src/components/appLayout.tsx
++++ b/ui-tui/src/components/appLayout.tsx
+@@ -610,24 +610,18 @@ const StatusRulePane = memo(function StatusRulePane({
+         busy={ui.busy}
+         cols={composer.cols}
+         compacting={ui.compacting}
+-        cwdLabel={status.cwdLabel}
+         focusView={ui.focusView}
+-        indicatorStyle={ui.indicatorStyle}
+         lastTurnEndedAt={status.lastTurnEndedAt}
+-        liveSessionCount={ui.liveSessionCount}
+         model={ui.info?.model ?? ''}
+         modelFast={ui.info?.fast}
+         modelReasoningEffort={ui.info?.reasoning_effort}
+         modelReasoningEffortWire={ui.info?.reasoning_effort_wire}
+         notice={ui.notice}
+-        onSessionCountClick={() => patchOverlayState({ sessions: true })}
+         sessionStartedAt={status.sessionStartedAt}
+-        sessionTitle={status.sessionTitle}
+         status={ui.status}
+         statusBarFields={ui.statusBarFields}
+         statusColor={status.statusColor}
+         t={ui.theme}
+-        turnStartedAt={status.turnStartedAt}
+         usage={ui.usage}
+         voiceLabel={status.voiceLabel}
+       />
+diff --git a/ui-tui/src/i18n/en/slashCmd/session.ts b/ui-tui/src/i18n/en/slashCmd/session.ts
+index ee90611c28..8d0b8d79c0 100644
+--- a/ui-tui/src/i18n/en/slashCmd/session.ts
++++ b/ui-tui/src/i18n/en/slashCmd/session.ts
+@@ -33,8 +33,8 @@ export const slashCmdSessionEn = {
+       usage: 'usage: /fast [normal|fast|ultrafast|status|on|off|toggle]'
+     },
+     indicator: {
+-      current: (style: string) => `indicator: ${style}`,
+-      switched: (style: string) => `indicator → ${style}`,
++      current: (style: string) => `indicator: ${style} (the sleek status rule does not use the indicator style)`,
++      switched: (style: string) => `indicator → ${style} (the sleek status rule does not use the indicator style)`,
+       usage: (styles: string) => `usage: /indicator [${styles}]`
+     },
+     model: {
+diff --git a/ui-tui/src/lib/tps.ts b/ui-tui/src/lib/tps.ts
+new file mode 100644
+index 0000000000..5d53536d77
+--- /dev/null
++++ b/ui-tui/src/lib/tps.ts
+@@ -0,0 +1,147 @@
++/**
++ * Token-per-second meter for the status bar — a faithful adaptation of
++ * pi-agent-flow's EMA-smoothed TPS estimator
++ * (src/snapshot/runner-events.ts, `updateSmoothedTps`).
++ *
++ * Calculation: streamed text deltas are converted to tokens with a 4:1 char
++ * heuristic, accumulated in a pending bucket, and only converted to a rate
++ * once MIN_TPS_SAMPLE_MS has elapsed. The instantaneous rate is capped
++ * (MAX_INSTANT_TPS suppresses burst artifacts from a single large chunk) and
++ * EMA-smoothed (EMA_ALPHA), with outlier damping (alpha × 0.3 when a sample
++ * exceeds 2× the smoothed value) so the readout runs evenly instead of
++ * jumping between chunks.
++ *
++ * Hermes adaptation over pi: a gap longer than STALE_WINDOW_MS (tool
++ * execution, thinking, user pause) restarts the measurement window instead of
++ * dividing the rate across idle time — the meter holds its last value while
++ * the model works silently and only moves from real streaming.
++ */
++
++export const CHARS_PER_TOKEN = 4
++export const MIN_TPS_SAMPLE_MS = 250
++export const MAX_INSTANT_TPS = 300
++export const EMA_ALPHA = 0.35
++export const OUTLIER_DAMP_FACTOR = 0.3
++export const STALE_WINDOW_MS = 3000
++
++export interface TpsTracker {
++  /** Feed a streamed text delta; chars are converted to tokens. */
++  sample(chars: number, now?: number): void
++  /** Feed an exact token count (e.g. a real usage delta). */
++  sampleTokens(tokens: number, now?: number): void
++  /** Current EMA-smoothed tokens/sec (0 = no samples yet). */
++  read(): number
++  /** Drop all measurement state (session switch). */
++  reset(): void
++}
++
++export function createTpsTracker(): TpsTracker {
++  let smoothedTps = 0
++  // null = never seeded (or reset); a numeric value is the last sample time.
++  let lastEmitTime: number | null = null
++  // Streamed chars and exact tokens accumulate separately; chars convert to
++  // tokens once per window, so many tiny deltas are never rounded up one by
++  // one (1-char deltas would otherwise each count as a whole token).
++  let pendingChars = 0
++  let pendingTokens = 0
++
++  const clearPending = () => {
++    pendingChars = 0
++    pendingTokens = 0
++  }
++
++  const emit = (now: number) => {
++    if (lastEmitTime === null) {
++      // First sample after a reset — seed the clock only; the pending
++      // tokens stay in the bucket so the first window measures them.
++      lastEmitTime = now
++
++      return
++    }
++
++    const deltaMs = now - lastEmitTime
++
++    if (deltaMs < MIN_TPS_SAMPLE_MS) {
++      return
++    }
++
++    // No streaming for longer than the stale window (tool execution,
++    // thinking, gap between turns). Restart the window WITHOUT touching the
++    // smoothed value — the rate must not be divided across idle time.
++    if (deltaMs > STALE_WINDOW_MS) {
++      lastEmitTime = now
++      clearPending()
++
++      return
++    }
++
++    const windowTokens = pendingTokens + pendingChars / CHARS_PER_TOKEN
++
++    if (windowTokens <= 0) {
++      lastEmitTime = now
++
++      return
++    }
++
++    const deltaSec = deltaMs / 1000
++    let instantRate = windowTokens / deltaSec
++
++    if (instantRate > MAX_INSTANT_TPS) {
++      instantRate = MAX_INSTANT_TPS
++    }
++
++    if (smoothedTps === 0) {
++      smoothedTps = instantRate
++    } else {
++      // Outlier rejection: dampen burst spikes that would dominate the EMA.
++      const alpha = instantRate > 2 * smoothedTps ? EMA_ALPHA * OUTLIER_DAMP_FACTOR : EMA_ALPHA
++      smoothedTps = alpha * instantRate + (1 - alpha) * smoothedTps
++    }
++
++    lastEmitTime = now
++    clearPending()
++  }
++
++  return {
++    sample(chars, now = Date.now()) {
++      if (chars <= 0) {
++        return
++      }
++
++      pendingChars += chars
++      emit(now)
++    },
++
++    sampleTokens(tokens, now = Date.now()) {
++      if (tokens <= 0) {
++        return
++      }
++
++      pendingTokens += tokens
++      emit(now)
++    },
++
++    read() {
++      return smoothedTps
++    },
++
++    reset() {
++      smoothedTps = 0
++      lastEmitTime = null
++      clearPending()
++    }
++  }
++}
++
++/**
++ * Fixed-width tokens-per-second label (pi-agent-flow `formatTps`): one
++ * decimal, left-padding to 5 columns so the readout never shifts the
++ * surrounding text as the number changes width (` 45.2` vs `  9.8`).
++ */
++export function formatTps(value: number): string {
++  if (!value || value <= 0) {
++    return '----- t/s'
++  }
++
++  return `${value.toFixed(1).padStart(5)} t/s`
++}
